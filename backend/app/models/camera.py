@@ -24,10 +24,10 @@ class Thresholds(BaseModel):
 
 
 class PipelineFeatures(BaseModel):
-    boxes: bool = True
+    boxes: bool = False
     masks: bool = False
     keypoints: bool = False
-    labels: bool = True
+    labels: bool = False
     trails: bool = False
     obb: bool = False
     semantic: bool = False
@@ -81,6 +81,11 @@ class PatchPipelineRequest(BaseModel):
     features: Optional[PipelineFeatures] = None
     applications: Optional[List[ApplicationConfig]] = None
     frame_skip: Optional[int] = None
+
+
+class ActivateCamerasRequest(BaseModel):
+    """The only camera workers that should remain active."""
+    camera_ids: List[str] = Field(default_factory=list, max_length=2)
 
 
 class ProbeRequest(BaseModel):

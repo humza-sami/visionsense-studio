@@ -1,0 +1,19 @@
+[Unit]
+Description=VisionSense native media agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=visionsense
+Group=visionsense
+WorkingDirectory=/opt/visionsense-studio
+ExecStart=/opt/visionsense-studio/media-agent/build/visionsense-media-agent --port 9010
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

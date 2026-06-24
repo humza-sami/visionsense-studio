@@ -94,7 +94,7 @@ export function FeatureToggles() {
         >
           <div className={`w-7 h-7 rounded-md flex items-center justify-center transition-colors ${
             features[feat.key]
-              ? 'bg-indigo-500/20 text-indigo-400'
+              ? 'bg-primary/10 text-foreground'
               : 'bg-secondary/60 text-muted-foreground'
           }`}>
             {feat.icon}
@@ -114,7 +114,7 @@ export function FeatureToggles() {
       <div className="flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-secondary/50 transition-colors mt-1">
         <div className={`w-7 h-7 rounded-md flex items-center justify-center transition-colors ${
           tracking.enabled
-            ? 'bg-indigo-500/20 text-indigo-400'
+            ? 'bg-primary/10 text-foreground'
             : 'bg-secondary/60 text-muted-foreground'
         }`}>
           <Navigation2 className="w-4 h-4" />

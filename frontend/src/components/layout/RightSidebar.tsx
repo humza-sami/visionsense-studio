@@ -6,7 +6,7 @@ import { ApplicationToggles } from '@/components/applications/ApplicationToggles
 
 export function RightSidebar() {
   return (
-    <div className="flex flex-col h-full bg-[#111118] border-l border-border/60 overflow-hidden">
+    <div className="flex flex-col h-full bg-card border-l border-border/60 overflow-hidden">
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="p-3 space-y-4">
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   Camera, Activity, Users2, BellRing, SlidersHorizontal,
-  Image, Circle, Trash2, Download, Video
+  Image, Circle, Trash2, Download, Video, PanelLeftClose
 } from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import { CameraCard } from '@/components/cameras/CameraCard'
@@ -15,16 +15,14 @@ import { formatMs, formatTimestamp } from '@/lib/utils'
 import * as api from '@/lib/api'
 
 const ALERT_COLORS: Record<string, string> = {
-  intrusion: 'text-red-400 bg-red-500/10 border-red-500/20',
-  speed: 'text-orange-400 bg-orange-500/10 border-orange-500/20',
-  ppe: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
+  intrusion: 'text-destructive bg-destructive/10 border-destructive/20',
   default: 'text-muted-foreground bg-secondary/50 border-border/40',
 }
 
 export function LeftSidebar() {
   const {
     cameras, selectedCameraId, telemetry, alerts, clearAlerts,
-    selectCamera, updateCamera, removeCamera,
+    selectCamera, updateCamera, removeCamera, setLeftSidebarCollapsed, setCameraPage,
   } = useStore()
 
   const [models, setModels] = useState<string[]>(['yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt'])
@@ -64,12 +62,27 @@ export function LeftSidebar() {
   }
 
   return (
-    <div className="flex flex-col h-full bg-[#111118] border-r border-border/60 overflow-hidden">
+    <div className="flex flex-col h-full bg-card border-r border-border/60 overflow-hidden">
       <ScrollArea className="flex-1 scrollbar-thin">
         <div className="p-3 space-y-4">
 
           {/* Section: Cameras */}
-          <SidebarSection icon={<Camera className="w-3.5 h-3.5" />} title="CAMERAS" count={cameras.length}>
+          <SidebarSection
+            icon={<Camera className="w-3.5 h-3.5" />}
+            title="CAMERAS"
+            count={cameras.length}
+            action={
+              <button
+                type="button"
+                onClick={() => setLeftSidebarCollapsed(true)}
+                className="w-6 h-6 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                title="Collapse camera panel"
+                aria-label="Collapse camera panel"
+              >
+                <PanelLeftClose className="w-3.5 h-3.5" />
+              </button>
+            }
+          >
             {cameras.length === 0 ? (
               <p className="text-xs text-muted-foreground px-2 py-2">No cameras added</p>
             ) : (
@@ -79,7 +92,10 @@ export function LeftSidebar() {
                     key={cam.id}
                     camera={cam}
                     isSelected={selectedCameraId === cam.id}
-                    onClick={() => selectCamera(cam.id === selectedCameraId ? null : cam.id)}
+                    onClick={() => {
+                      setCameraPage(Math.floor(cameras.findIndex((camera) => camera.id === cam.id) / 2))
+                      selectCamera(cam.id === selectedCameraId ? null : cam.id)
+                    }}
                   />
                 ))}
               </div>
@@ -110,7 +126,7 @@ export function LeftSidebar() {
               </div>
               <div className="h-1.5 bg-secondary/60 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-indigo-500 rounded-full transition-all duration-500"
+                  className="h-full bg-primary rounded-full transition-all duration-500"
                   style={{
                     width: cameras.length > 0
                       ? `${(cameras.filter((c) => c.status === 'live').length / cameras.length) * 100}%`
@@ -132,7 +148,7 @@ export function LeftSidebar() {
                 {Object.entries(aggregateCounts).map(([label, count]) => (
                   <div key={label} className="flex items-center justify-between px-2 py-1 rounded bg-secondary/30">
                     <span className="text-xs text-foreground/80 capitalize">{label}</span>
-                    <Badge variant="indigo" className="text-xs font-mono tabular-nums h-5">
+                    <Badge variant="secondary" className="text-xs font-mono tabular-nums h-5">
                       {count}
                     </Badge>
                   </div>
@@ -275,7 +291,7 @@ export function LeftSidebar() {
                 <Button
                   size="sm"
                   variant="outline"
-                  className="gap-1.5 text-xs h-8 col-span-2 border-red-500/30 hover:bg-red-500/10 hover:text-red-400"
+                  className="gap-1.5 text-xs h-8 col-span-2 border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
                   onClick={async () => {
                     try {
                       await api.deleteCamera(selectedCamera.id)
@@ -283,7 +299,7 @@ export function LeftSidebar() {
                     removeCamera(selectedCamera.id)
                   }}
                 >
-                  <Trash2 className="w-3.5 h-3.5 text-red-400" /> Remove Camera
+                  <Trash2 className="w-3.5 h-3.5" /> Remove Camera
                 </Button>
               )}
             </div>
@@ -335,9 +351,9 @@ function MetricCard({
   status: 'good' | 'warn' | 'bad' | 'idle'
 }) {
   const statusColors = {
-    good: 'text-green-400',
-    warn: 'text-amber-400',
-    bad: 'text-red-400',
+    good: 'text-foreground',
+    warn: 'text-muted-foreground',
+    bad: 'text-destructive',
     idle: 'text-muted-foreground',
   }
 

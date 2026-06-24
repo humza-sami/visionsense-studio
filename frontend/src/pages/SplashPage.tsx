@@ -1,14 +1,30 @@
 import { useEffect } from 'react'
 import { useStore } from '@/store/useStore'
+import * as api from '@/lib/api'
 import logoUrl from '@/assets/logo.svg'
 
 export function SplashPage() {
-  const setAppPhase = useStore((s) => s.setAppPhase)
+  const { setAppPhase, setCameras, backendUrl } = useStore()
 
   useEffect(() => {
-    const timer = setTimeout(() => setAppPhase('setup'), 3000)
-    return () => clearTimeout(timer)
-  }, [setAppPhase])
+    let cancelled = false
+    const bootstrap = async () => {
+      api.setBackendUrl(backendUrl)
+      try {
+        const cameras = await api.getCameras()
+        if (cancelled) return
+        setCameras(cameras)
+        setAppPhase(cameras.length > 0 ? 'dashboard' : 'setup')
+      } catch {
+        if (!cancelled) setAppPhase('setup')
+      }
+    }
+    const timer = window.setTimeout(() => void bootstrap(), 1200)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [backendUrl, setAppPhase, setCameras])
 
   return (
     <div
@@ -58,7 +74,7 @@ export function SplashPage() {
         className="absolute bottom-0 left-0 h-[2px]"
         style={{
           backgroundColor: '#19B5BE',
-          animation: 'splash-bar 3s linear forwards',
+          animation: 'splash-bar 1.2s linear forwards',
         }}
       />
 

@@ -48,6 +48,13 @@ export async function stopCamera(id: string): Promise<Camera> {
   return request<Camera>(`/api/cameras/${id}/stop`, { method: 'POST' })
 }
 
+export async function activateCameras(cameraIds: string[]): Promise<Camera[]> {
+  return request<Camera[]>('/api/cameras/activate', {
+    method: 'POST',
+    body: JSON.stringify({ camera_ids: cameraIds }),
+  })
+}
+
 export async function updatePipeline(
   id: string,
   pipeline: Partial<PipelineConfig>
@@ -64,11 +71,18 @@ export async function probeChannels(
   rangeEnd: number,
   username?: string,
   password?: string,
-  port?: number
+  subtype = 0
 ): Promise<{ alive: number[] }> {
-  return request<{ alive: number[] }>('/api/probe', {
+  return request<{ alive: number[] }>('/api/cameras/probe', {
     method: 'POST',
-    body: JSON.stringify({ template, range_start: rangeStart, range_end: rangeEnd, username, password, port }),
+    body: JSON.stringify({
+      template,
+      range_start: rangeStart,
+      range_end: rangeEnd,
+      username,
+      password,
+      subtype,
+    }),
   })
 }
 
@@ -77,7 +91,8 @@ export async function getDevices(): Promise<Device[]> {
 }
 
 export async function getModels(): Promise<string[]> {
-  return request<string[]>('/api/models')
+  const res = await request<Array<string | { name: string }>>('/api/models')
+  return res.map((m) => (typeof m === 'string' ? m : m.name))
 }
 
 export function getStreamUrl(camId: string, backendUrl?: string): string {

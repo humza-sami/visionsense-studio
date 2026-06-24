@@ -20,17 +20,19 @@ import logging
 import os
 import platform
 import re
-import time
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import cv2
 from fastapi import APIRouter, HTTPException, status
+from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.core.camera_manager import camera_manager
 from app.models.camera import (
     Camera,
+    ActivateCamerasRequest,
     CreateCameraRequest,
     PatchPipelineRequest,
     PipelineConfig,
@@ -90,6 +92,15 @@ async def stop_camera(cam_id: str):
     return cam
 
 
+@router.post("/cameras/activate", response_model=List[Camera])
+async def activate_cameras(body: ActivateCamerasRequest):
+    """Run only the requested two-camera page and release all other streams."""
+    try:
+        return await run_in_threadpool(camera_manager.activate_only, body.camera_ids)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Camera '{exc.args[0]}' not found")
+
+
 @router.patch("/cameras/{cam_id}/pipeline", response_model=Camera)
 async def patch_pipeline(cam_id: str, body: PatchPipelineRequest):
     camera = camera_manager.get(cam_id)
@@ -117,27 +128,29 @@ def _probe_channel(template: str, channel: int, timeout_s: float) -> Optional[in
     Runs in a thread-pool thread.
     """
     url = template.replace("{channel}", str(channel))
-    cap = None
     try:
-        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(timeout_s * 1000))
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, int(timeout_s * 1000))
-
-        opened = cap.isOpened()
-        if opened:
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                return channel
+        # VideoCapture can block before OpenCV applies its timeout properties.
+        # ffprobe gives us a real process-level timeout, so a dead channel
+        # cannot leave the Add Camera UI waiting indefinitely.
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-rtsp_transport", "tcp",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=index",
+                "-of", "csv=p=0",
+                url,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_s,
+            check=False,
+            text=True,
+        )
+        return channel if result.returncode == 0 and result.stdout.strip() else None
+    except (subprocess.TimeoutExpired, OSError):
         return None
-    except Exception:
-        return None
-    finally:
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:
-                pass
 
 
 @router.post("/cameras/probe", response_model=ProbeResponse)

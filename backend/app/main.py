@@ -47,21 +47,6 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown hooks."""
     logger.info("VisionSense Studio backend starting...")
 
-    # Pre-warm the default YOLO model in a background thread so the first
-    # camera start doesn't stall the event loop.
-    async def _prewarm():
-        try:
-            import threading
-            def _load():
-                from app.core.inference_engine import _load_model
-                _load_model(settings.default_model, settings.yolo_device)
-            t = threading.Thread(target=_load, daemon=True, name="prewarm")
-            t.start()
-        except Exception as e:
-            logger.warning(f"Model pre-warm failed: {e}")
-
-    asyncio.create_task(_prewarm())
-
     # Start telemetry broadcaster
     broadcast_task = asyncio.create_task(get_broadcast_loop())
     logger.info("Telemetry broadcaster task created")

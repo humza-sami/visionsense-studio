@@ -30,17 +30,33 @@ class Settings(BaseSettings):
     yolo_device: str = "cpu"  # "0" for first GPU, "cpu" for CPU
 
     # ── Streaming ─────────────────────────────────────────────────────────────
-    mjpeg_quality: int = 80          # JPEG encode quality 0–100
+    mjpeg_quality: int = 72          # JPEG encode quality 0–100
+    stream_max_width: int = 960      # resize dashboard frames before JPEG encode
+    stream_target_fps: float = 10.0  # avoid encoding every source frame
     frame_queue_maxsize: int = 4     # per-camera queue depth (keep latency low)
     telemetry_interval_ms: int = 200 # WS push interval
+    media_agent_url: str = "http://host.docker.internal:9010"
+    media_agent_timeout_s: float = 2.0
+    prefer_native_media: bool = True
+
+    # ── Persistence ───────────────────────────────────────────────────────────
+    data_dir: Path = Path(os.getenv("VS_DATA_DIR", Path(__file__).resolve().parents[1] / "data"))
+    database_path: Path = Path(
+        os.getenv(
+            "VS_DATABASE_PATH",
+            Path(__file__).resolve().parents[1] / "data" / "visionsense.db",
+        )
+    )
 
     # ── RTSP ──────────────────────────────────────────────────────────────────
     rtsp_timeout_ms: int = 5_000
     rtsp_reconnect_delay_s: float = 5.0
 
     # ── Channel probing ───────────────────────────────────────────────────────
-    probe_timeout_s: float = 3.0
-    probe_max_workers: int = 16
+    # Many NVRs throttle simultaneous RTSP handshakes. A small worker pool is
+    # both faster and more reliable than opening every channel at once.
+    probe_timeout_s: float = 6.0
+    probe_max_workers: int = 4
 
     class Config:
         env_prefix = "VS_"

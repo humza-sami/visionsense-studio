@@ -1,4 +1,18 @@
 services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.19.1
+    container_name: visionsense-mediamtx
+    ports:
+      - "8554:8554"
+      - "8889:8889"
+      - "8189:8189/udp"
+    environment:
+      # Set this to the Ubuntu laptop's LAN IP for remote browser clients.
+      - MTX_WEBRTCADDITIONALHOSTS=${VS_WEBRTC_ADDITIONAL_HOSTS:-127.0.0.1}
+    restart: unless-stopped
+    networks:
+      - visionsense
+
   backend:
     build:
       context: ./backend
@@ -8,9 +22,18 @@ services:
       - "8000:8000"
     volumes:
       - model-cache:/root/.cache/ultralytics   # keeps downloaded YOLO models
+      - app-data:/app/data
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
       - PYTHONUNBUFFERED=1
+      - VS_YOLO_DEVICE=0
+      - VS_MEDIA_AGENT_URL=http://host.docker.internal:9010
+      - VS_PREFER_NATIVE_MEDIA=true
+      - VS_DATABASE_PATH=/app/data/visionsense.db
+    shm_size: "2gb"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         reservations:
@@ -19,6 +42,8 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
+    depends_on:
+      - mediamtx
     networks:
       - visionsense
 
@@ -31,6 +56,7 @@ services:
       - "3000:80"              # open http://localhost:3000
     depends_on:
       - backend
+      - mediamtx
     restart: unless-stopped
     networks:
       - visionsense
@@ -41,3 +67,4 @@ networks:
 
 volumes:
   model-cache:
+  app-data:

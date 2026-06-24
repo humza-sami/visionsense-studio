@@ -15,78 +15,20 @@ interface AppDef {
   label: string
   icon: React.ReactNode
   description: string
-  color: string
   hasZone?: boolean
   hasLine?: boolean
 }
 
 const APP_DEFS: AppDef[] = [
-  {
-    type: 'head_count',
-    label: 'Head Count',
-    icon: <Users className="w-4 h-4" />,
-    description: 'Count persons in frame',
-    color: 'text-blue-400',
-  },
-  {
-    type: 'customer_in_out',
-    label: 'Customer In/Out',
-    icon: <ArrowLeftRight className="w-4 h-4" />,
-    description: 'Line-crossing counter',
-    color: 'text-green-400',
-    hasLine: true,
-  },
-  {
-    type: 'manager_presence',
-    label: 'Manager Presence',
-    icon: <UserCheck className="w-4 h-4" />,
-    description: 'Detect person in seat',
-    color: 'text-purple-400',
-    hasZone: true,
-  },
-  {
-    type: 'mobile_usage',
-    label: 'Mobile Usage',
-    icon: <Smartphone className="w-4 h-4" />,
-    description: 'Phone usage detection',
-    color: 'text-amber-400',
-  },
-  {
-    type: 'ppe_safety',
-    label: 'PPE / Safety',
-    icon: <HardHat className="w-4 h-4" />,
-    description: 'Safety equipment check',
-    color: 'text-orange-400',
-  },
-  {
-    type: 'heatmap',
-    label: 'Heatmap',
-    icon: <Flame className="w-4 h-4" />,
-    description: 'Foot traffic heatmap',
-    color: 'text-red-400',
-  },
-  {
-    type: 'intrusion',
-    label: 'Intrusion Alarm',
-    icon: <ShieldAlert className="w-4 h-4" />,
-    description: 'Zone alert system',
-    color: 'text-red-400',
-    hasZone: true,
-  },
-  {
-    type: 'privacy_blur',
-    label: 'Privacy Blur',
-    icon: <EyeOff className="w-4 h-4" />,
-    description: 'Face / person blur',
-    color: 'text-slate-400',
-  },
-  {
-    type: 'speed_estimation',
-    label: 'Speed Estimation',
-    icon: <Gauge className="w-4 h-4" />,
-    description: 'Object speed tracking',
-    color: 'text-cyan-400',
-  },
+  { type: 'head_count',       label: 'Head Count',       icon: <Users className="w-4 h-4" />,       description: 'Count persons in frame' },
+  { type: 'customer_in_out',  label: 'Customer In/Out',  icon: <ArrowLeftRight className="w-4 h-4" />, description: 'Line-crossing counter', hasLine: true },
+  { type: 'manager_presence', label: 'Manager Presence', icon: <UserCheck className="w-4 h-4" />,  description: 'Detect person in seat', hasZone: true },
+  { type: 'mobile_usage',     label: 'Mobile Usage',     icon: <Smartphone className="w-4 h-4" />, description: 'Phone usage detection' },
+  { type: 'ppe_safety',       label: 'PPE / Safety',     icon: <HardHat className="w-4 h-4" />,    description: 'Safety equipment check' },
+  { type: 'heatmap',          label: 'Heatmap',          icon: <Flame className="w-4 h-4" />,      description: 'Foot traffic heatmap' },
+  { type: 'intrusion',        label: 'Intrusion Alarm',  icon: <ShieldAlert className="w-4 h-4" />, description: 'Zone alert system', hasZone: true },
+  { type: 'privacy_blur',     label: 'Privacy Blur',     icon: <EyeOff className="w-4 h-4" />,     description: 'Face / person blur' },
+  { type: 'speed_estimation', label: 'Speed Estimation', icon: <Gauge className="w-4 h-4" />,      description: 'Object speed tracking' },
 ]
 
 async function doToggleApp(
@@ -98,13 +40,11 @@ async function doToggleApp(
   const { applications } = cam.pipeline
   let newApps: ApplicationConfig[]
   const existing = applications.find((a) => a.type === type)
-
   if (existing) {
     newApps = applications.map((a) => a.type === type ? { ...a, enabled } : a)
   } else {
     newApps = [...applications, { type, enabled, config: {} }]
   }
-
   updateCamera(cam.id, { pipeline: { ...cam.pipeline, applications: newApps } })
   try {
     await api.updatePipeline(cam.id, { applications: newApps })
@@ -171,8 +111,8 @@ export function ApplicationToggles() {
           <div key={app.type} className="rounded-lg overflow-hidden">
             <div className="flex items-center gap-3 px-2 py-2 hover:bg-secondary/50 transition-colors group">
               <div className={`w-7 h-7 rounded-md flex items-center justify-center transition-colors ${
-                enabled ? 'bg-indigo-500/10' : 'bg-secondary/60'
-              } ${enabled ? app.color : 'text-muted-foreground'}`}>
+                enabled ? 'bg-primary/10 text-foreground' : 'bg-secondary/60 text-muted-foreground'
+              }`}>
                 {app.icon}
               </div>
               <div className="flex-1 min-w-0">
@@ -206,7 +146,7 @@ export function ApplicationToggles() {
               <button
                 key={token}
                 onClick={() => void doRemoveToken(camera, updateCamera, token)}
-                className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs hover:bg-red-500/15 hover:border-red-500/30 hover:text-red-300 transition-colors group"
+                className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-secondary border border-border text-foreground text-xs hover:bg-destructive/10 hover:border-destructive/30 hover:text-destructive transition-colors group"
               >
                 {token}
                 <span className="text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">×</span>

@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { LayoutGrid, Settings, Wifi, WifiOff } from 'lucide-react'
+import { Camera, PanelLeftOpen, Settings, Wifi, WifiOff } from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import { useTelemetryWS } from '@/lib/websocket'
 import { LeftSidebar } from '@/components/layout/LeftSidebar'
@@ -11,22 +11,44 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import * as api from '@/lib/api'
 import logoUrl from '@/assets/logo.svg'
 
-const GRID_SIZES = [1, 2, 3, 4] as const
-
 export function DashboardPage() {
-  const { cameras, setCameras, gridSize, setGridSize, backendUrl } = useStore()
+  const {
+    cameras, setCameras, updateCamera, setGridSize, backendUrl,
+    leftSidebarCollapsed, setLeftSidebarCollapsed,
+  } = useStore()
   const { connected } = useTelemetryWS(backendUrl)
 
   useEffect(() => {
     api.setBackendUrl(backendUrl)
-    api.getCameras().then(setCameras).catch(() => {})
-  }, [backendUrl, setCameras])
+    api.getCameras().then((loadedCameras) => {
+      setCameras(loadedCameras)
+      const currentGridSize = useStore.getState().gridSize
+      if (loadedCameras.length > currentGridSize * currentGridSize) {
+        setGridSize(
+          loadedCameras.length > 9 ? 4 :
+          loadedCameras.length > 4 ? 3 :
+          loadedCameras.length > 1 ? 2 : 1
+        )
+      }
+    }).catch(() => {})
+  }, [backendUrl, setCameras, setGridSize])
+
+  // Poll camera status every 5 s so error/stopped cameras update without WebSocket
+  useEffect(() => {
+    const id = setInterval(async () => {
+      try {
+        const cams = await api.getCameras()
+        cams.forEach((c) => updateCamera(c.id, { status: c.status, error_message: c.error_message }))
+      } catch { /* noop */ }
+    }, 5000)
+    return () => clearInterval(id)
+  }, [updateCamera])
 
   return (
     <TooltipProvider delayDuration={400}>
-      <div className="flex flex-col h-screen bg-[#0a0a0f] overflow-hidden">
+      <div className="flex flex-col h-screen bg-background overflow-hidden">
         {/* Top Bar */}
-        <header className="h-12 flex items-center gap-3 px-3 border-b border-border/60 bg-[#111118] shrink-0">
+        <header className="h-12 flex items-center gap-3 px-3 border-b border-border/60 bg-card shrink-0">
           {/* Logo + Title */}
           <div className="flex items-center gap-2 shrink-0">
             <img src={logoUrl} alt="VS" className="w-7 h-7" />
@@ -53,8 +75,8 @@ export function DashboardPage() {
             <TooltipTrigger asChild>
               <div className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs ${
                 connected
-                  ? 'text-green-400 bg-green-500/10'
-                  : 'text-red-400 bg-red-500/10'
+                  ? 'text-foreground bg-secondary'
+                  : 'text-destructive bg-destructive/10'
               }`}>
                 {connected ? (
                   <Wifi className="w-3.5 h-3.5" />
@@ -71,25 +93,8 @@ export function DashboardPage() {
 
           <div className="w-px h-5 bg-border/60 mx-1" />
 
-          {/* Grid Size buttons */}
-          <div className="flex items-center gap-0.5 bg-secondary/60 rounded-lg p-0.5">
-            {GRID_SIZES.map((size) => (
-              <Tooltip key={size}>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => setGridSize(size)}
-                    className={`w-7 h-7 rounded-md flex items-center justify-center transition-all duration-150 ${
-                      gridSize === size
-                        ? 'bg-primary text-primary-foreground shadow-sm'
-                        : 'text-muted-foreground hover:text-foreground hover:bg-secondary'
-                    }`}
-                  >
-                    <GridIcon size={size} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>{size}×{size} grid</TooltipContent>
-              </Tooltip>
-            ))}
+          <div className="rounded-md bg-secondary/60 px-2 py-1 text-[11px] text-muted-foreground">
+            2 cameras per page
           </div>
 
           <div className="w-px h-5 bg-border/60 mx-1" />
@@ -111,12 +116,39 @@ export function DashboardPage() {
         {/* Main 3-column layout */}
         <div className="flex flex-1 overflow-hidden">
           {/* Left Sidebar */}
-          <div className="w-[280px] shrink-0 overflow-hidden">
-            <LeftSidebar />
+          <div
+            className={`shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${
+              leftSidebarCollapsed ? 'w-10' : 'w-[280px]'
+            }`}
+          >
+            {leftSidebarCollapsed ? (
+              <div className="h-full bg-card border-r border-border/60 flex flex-col items-center py-2 gap-2">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => setLeftSidebarCollapsed(false)}
+                      className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                      aria-label="Expand camera panel"
+                    >
+                      <PanelLeftOpen className="w-4 h-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">Expand camera panel</TooltipContent>
+                </Tooltip>
+                <div className="w-5 h-px bg-border/60" />
+                <Camera className="w-4 h-4 text-muted-foreground" />
+                <span className="text-[10px] tabular-nums text-muted-foreground [writing-mode:vertical-rl] rotate-180">
+                  {cameras.filter((camera) => camera.status === 'live').length}/{cameras.length} live
+                </span>
+              </div>
+            ) : (
+              <LeftSidebar />
+            )}
           </div>
 
           {/* Center: Camera Grid */}
-          <main className="flex-1 overflow-hidden bg-[#0a0a0f]">
+          <main className="flex-1 overflow-hidden bg-background">
             <CameraGrid />
           </main>
 
@@ -127,38 +159,5 @@ export function DashboardPage() {
         </div>
       </div>
     </TooltipProvider>
-  )
-}
-
-function GridIcon({ size }: { size: 1 | 2 | 3 | 4 }) {
-  if (size === 1) {
-    return <LayoutGrid className="w-3.5 h-3.5" />
-  }
-  const count = size * size
-  const cols = size
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-      {Array.from({ length: count }).map((_, i) => {
-        const col = i % cols
-        const row = Math.floor(i / cols)
-        const cellSize = 12 / cols
-        const gap = 1
-        const x = col * (cellSize + gap / cols)
-        const y = row * (cellSize + gap / cols)
-        const s = cellSize - gap * ((cols - 1) / cols)
-        return (
-          <rect
-            key={i}
-            x={x + 1}
-            y={y + 1}
-            width={s}
-            height={s}
-            rx={0.5}
-            fill="currentColor"
-            opacity={0.8}
-          />
-        )
-      })}
-    </svg>
   )
 }

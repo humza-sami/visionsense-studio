@@ -32,6 +32,7 @@ success "Docker is running."
 
 # ── detect GPU → choose compose file ─────────────────────────────────────────
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.mac.yml"   # default: CPU / Mac
+MEDIA_AGENT_PID=""
 
 if command -v nvidia-smi >/dev/null 2>&1; then
   GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || echo "")
@@ -40,13 +41,48 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
   fi
 else
-  warn "No NVIDIA GPU — using CPU build (Mac Mini / Apple Silicon mode)."
+  warn "No NVIDIA GPU — using Mac / CPU compose profile."
+fi
+
+# MediaMTX must be reachable before the native agent starts publishing WHIP.
+info "Starting the WebRTC media server..."
+docker compose -f "$COMPOSE_FILE" up -d mediamtx
+for _ in {1..30}; do
+  if curl -sS http://127.0.0.1:8889/ >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+success "WebRTC media server is ready."
+
+# ── native media agent ───────────────────────────────────────────────────────
+if curl -fsS http://127.0.0.1:9010/health >/dev/null 2>&1; then
+  success "Native media agent is already running."
+else
+  info "Building and starting the native media agent..."
+  "$SCRIPT_DIR/scripts/build-media-agent.sh"
+  VS_MEDIA_PUBLISH_BASE="${VS_MEDIA_PUBLISH_BASE:-rtsp://127.0.0.1:8554}" \
+  VS_WEBRTC_PUBLIC_BASE="${VS_WEBRTC_PUBLIC_BASE:-http://localhost:8889}" \
+    "$SCRIPT_DIR/media-agent/build/visionsense-media-agent" --port 9010 &
+  MEDIA_AGENT_PID=$!
+  for _ in {1..30}; do
+    if curl -fsS http://127.0.0.1:9010/health >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.2
+  done
+  curl -fsS http://127.0.0.1:9010/health >/dev/null 2>&1 || \
+    error "Native media agent did not become ready."
+  success "Native media agent started (PID $MEDIA_AGENT_PID)."
 fi
 
 # ── cleanup on Ctrl+C ─────────────────────────────────────────────────────────
 cleanup() {
   echo -e "\n${YELLOW}[VisionSense]${RESET} Stopping containers..."
   docker compose -f "$COMPOSE_FILE" down
+  if [[ -n "$MEDIA_AGENT_PID" ]]; then
+    kill "$MEDIA_AGENT_PID" >/dev/null 2>&1 || true
+  fi
   success "Stopped. Goodbye!"
 }
 trap cleanup EXIT INT TERM

@@ -10,6 +10,10 @@ interface StoreState {
   // UI state
   appPhase: AppPhase
   setAppPhase: (phase: AppPhase) => void
+  leftSidebarCollapsed: boolean
+  setLeftSidebarCollapsed: (collapsed: boolean) => void
+  cameraPage: number
+  setCameraPage: (page: number) => void
 
   // Cameras
   cameras: Camera[]
@@ -44,6 +48,10 @@ export const useStore = create<StoreState>()(
       // UI state
       appPhase: 'splash',
       setAppPhase: (phase) => set({ appPhase: phase }),
+      leftSidebarCollapsed: false,
+      setLeftSidebarCollapsed: (collapsed) => set({ leftSidebarCollapsed: collapsed }),
+      cameraPage: 0,
+      setCameraPage: (page) => set({ cameraPage: Math.max(0, page) }),
 
       // Cameras
       cameras: [],
@@ -97,6 +105,7 @@ export const useStore = create<StoreState>()(
       partialize: (state) => ({
         backendUrl: state.backendUrl,
         gridSize: state.gridSize,
+        leftSidebarCollapsed: state.leftSidebarCollapsed,
       }),
     }
   )

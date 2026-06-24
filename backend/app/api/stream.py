@@ -18,11 +18,13 @@ import time
 from typing import AsyncGenerator
 
 import cv2
+import httpx
 import numpy as np
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.core.camera_manager import camera_manager
+from app.core.media_agent_client import native_stream_url
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["stream"])
@@ -121,6 +123,22 @@ async def _frame_generator(cam_id: str) -> AsyncGenerator[bytes, None]:
         return
 
 
+async def _native_frame_generator(cam_id: str) -> AsyncGenerator[bytes, None]:
+    """Pass through the native agent's hardware-decoded MJPEG stream."""
+    timeout = httpx.Timeout(connect=3.0, read=None, write=3.0, pool=3.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("GET", native_stream_url(cam_id)) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes(64 * 1024):
+                    if chunk:
+                        yield chunk
+    except asyncio.CancelledError:
+        return
+    except httpx.HTTPError as exc:
+        logger.warning(f"[stream/{cam_id}] Native stream ended: {exc}")
+
+
 # ── Route ─────────────────────────────────────────────────────────────────────
 
 @router.get(
@@ -140,8 +158,13 @@ async def mjpeg_stream(cam_id: str):
     if camera is None:
         raise HTTPException(status_code=404, detail=f"Camera '{cam_id}' not found")
 
+    generator = (
+        _native_frame_generator(cam_id)
+        if camera_manager.is_native(cam_id)
+        else _frame_generator(cam_id)
+    )
     return StreamingResponse(
-        _frame_generator(cam_id),
+        generator,
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",

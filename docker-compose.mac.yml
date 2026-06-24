@@ -1,6 +1,19 @@
 # Mac Mini / Apple Silicon / CPU-only
 # Usage: docker compose -f docker-compose.mac.yml up --build
 services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.19.1
+    container_name: visionsense-mediamtx
+    ports:
+      - "8554:8554"
+      - "8889:8889"
+      - "8189:8189/udp"
+    environment:
+      - MTX_WEBRTCADDITIONALHOSTS=${VS_WEBRTC_ADDITIONAL_HOSTS:-127.0.0.1}
+    restart: unless-stopped
+    networks:
+      - visionsense
+
   backend:
     build:
       context: ./backend
@@ -10,10 +23,16 @@ services:
       - "8000:8000"
     volumes:
       - model-cache:/root/.cache/ultralytics
+      - app-data:/app/data
     environment:
       - PYTHONUNBUFFERED=1
-      - DEVICE=cpu
+      - VS_YOLO_DEVICE=cpu
+      - VS_MEDIA_AGENT_URL=http://host.docker.internal:9010
+      - VS_PREFER_NATIVE_MEDIA=true
+      - VS_DATABASE_PATH=/app/data/visionsense.db
     restart: unless-stopped
+    depends_on:
+      - mediamtx
     networks:
       - visionsense
 
@@ -26,6 +45,7 @@ services:
       - "3000:80"
     depends_on:
       - backend
+      - mediamtx
     restart: unless-stopped
     networks:
       - visionsense
@@ -36,3 +56,4 @@ networks:
 
 volumes:
   model-cache:
+  app-data:

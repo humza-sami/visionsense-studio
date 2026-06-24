@@ -6,7 +6,8 @@ const INITIAL_RETRY_DELAY = 1_000
 
 export function useTelemetryWS(backendUrl: string) {
   const updateTelemetry = useStore((s) => s.updateTelemetry)
-  const addAlert = useStore((s) => s.addAlert)
+  const updateCamera    = useStore((s) => s.updateCamera)
+  const addAlert        = useStore((s) => s.addAlert)
   const [connected, setConnected] = useState(false)
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
@@ -33,8 +34,12 @@ export function useTelemetryWS(backendUrl: string) {
       ws.onmessage = (event: MessageEvent) => {
         try {
           const data = JSON.parse(event.data as string)
+          // Skip keepalive pings that have no cam_id
+          if (!data.cam_id) return
           updateTelemetry(data)
           setLastUpdate(new Date())
+          // If the backend is sending telemetry for this camera, it is live
+          updateCamera(data.cam_id as string, { status: 'live' })
 
           // Extract alerts
           if (Array.isArray(data.alerts)) {
@@ -74,7 +79,7 @@ export function useTelemetryWS(backendUrl: string) {
       if (timeoutRef.current) clearTimeout(timeoutRef.current)
       wsRef.current?.close()
     }
-  }, [backendUrl, updateTelemetry, addAlert])
+  }, [backendUrl, updateTelemetry, updateCamera, addAlert])
 
   return { connected, lastUpdate }
 }
