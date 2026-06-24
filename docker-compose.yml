@@ -1,0 +1,43 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      target: gpu              # NVIDIA GPU — change to "cpu" if no GPU
+    container_name: visionsense-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-cache:/root/.cache/ultralytics   # keeps downloaded YOLO models
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - visionsense
+
+  frontend:
+    build:
+      context: ./frontend
+      target: production
+    container_name: visionsense-frontend
+    ports:
+      - "3000:80"              # open http://localhost:3000
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - visionsense
+
+networks:
+  visionsense:
+    driver: bridge
+
+volumes:
+  model-cache:

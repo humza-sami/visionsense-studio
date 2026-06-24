@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" fill="none">
+  <!-- Eye icon only — used as standalone mark in the splash -->
+  <g transform="translate(200,200)">
+    <!-- Outer almond / eyelid shape -->
+    <path
+      d="M -160,0 C -120,-70 120,-70 160,0 C 120,70 -120,70 -160,0 Z"
+      stroke="#19B5BE"
+      stroke-width="10"
+      fill="none"
+      stroke-linejoin="round"
+    />
+    <!-- Outer iris ring -->
+    <circle cx="0" cy="0" r="72" stroke="#19B5BE" stroke-width="9" fill="none"/>
+    <!-- Middle iris ring -->
+    <circle cx="0" cy="0" r="46" stroke="#19B5BE" stroke-width="8" fill="none"/>
+    <!-- Pupil / inner dot -->
+    <circle cx="0" cy="0" r="18" fill="#19B5BE"/>
+  </g>
+</svg>

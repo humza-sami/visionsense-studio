@@ -1,0 +1,38 @@
+# Mac Mini / Apple Silicon / CPU-only
+# Usage: docker compose -f docker-compose.mac.yml up --build
+services:
+  backend:
+    build:
+      context: ./backend
+      target: cpu              # CPU build — no NVIDIA needed
+    container_name: visionsense-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-cache:/root/.cache/ultralytics
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DEVICE=cpu
+    restart: unless-stopped
+    networks:
+      - visionsense
+
+  frontend:
+    build:
+      context: ./frontend
+      target: production
+    container_name: visionsense-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - visionsense
+
+networks:
+  visionsense:
+    driver: bridge
+
+volumes:
+  model-cache:
