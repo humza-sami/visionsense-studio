@@ -271,3 +271,111 @@ uses Apple VideoToolbox/CoreML on macOS and NVDEC/NVENC/TensorRT on Ubuntu
 * Local browser use works with the default additional ICE host `127.0.0.1`.
 * For another device on the LAN, set `VS_WEBRTC_ADDITIONAL_HOSTS` to the Mac or
   Ubuntu server's LAN IP before running Compose.
+
+## [2026-06-24] - Decoupled Smooth AI Overlay
+**Agent:** Codex (GPT-5)
+
+### Root Cause
+* Enabling any AI toggle previously stopped the native VideoToolbox/WebRTC
+  pipeline and replaced it with a synchronous Python/OpenCV/YOLO/MJPEG worker.
+* The Mac Docker image contains CPU-only PyTorch. Docker cannot expose Apple's
+  Metal/MPS device, so model inference limited the entire video stream to
+  approximately 6–7 FPS.
+
+### Completed
+* Native H.264 WebRTC now remains active when AI is enabled or disabled.
+* Added a single-camera AI sidecar with separate capture and inference threads:
+  * capture continuously drains RTSP;
+  * inference always takes the newest frame;
+  * stale frames are overwritten instead of queued;
+  * slow inference can no longer add video latency.
+* Removed server-side JPEG encoding and annotation rendering from the RTSP AI
+  path.
+* Reduced the Mac CPU inference input to a bounded 512-pixel YOLO size while
+  preserving 1280×720 browser video.
+* Added normalized detection metadata to WebSocket telemetry.
+* Added browser-side SVG boxes and labels over the live WebRTC `<video>`.
+* Split telemetry into `video_fps`, `ai_fps`, and `inference_ms`.
+* Added deterministic ownership for the single AI slot.
+* Background dashboard tabs no longer fight the visible operator tab for the
+  global two-camera decoder allocation.
+
+### Verified
+* AI off → on → off → on did not recreate or restart the native pipeline:
+  * frame counter increased continuously from 1195 to 1550;
+  * restart count remained zero;
+  * video remained approximately 25.0 FPS.
+* Current Mac Docker CPU sidecar:
+  * approximately 15–17 AI FPS;
+  * approximately 51–55 ms inference latency at 512 input size;
+  * detections delivered through WebSocket.
+* Browser grid:
+  * two 1280×720 WebRTC videos, `readyState=4`, playing;
+  * no MJPEG image elements;
+  * live overlay boxes and labels.
+* Browser spotlight:
+  * one 1280×720 WebRTC video remained playing;
+  * browser-rendered AI overlay remained active;
+  * no warnings or errors.
+
+### Next Acceleration Milestone
+* Video output is already a stable 25 FPS. AI metadata currently runs at
+  approximately 15–17 FPS because the Mac Docker container is CPU-only.
+* A native macOS CoreML/Metal inference service is the next step for using the
+  M4 GPU/Neural Engine; Ubuntu continues toward TensorRT/CUDA on the GTX 1660.
+
+## [2026-06-24] - Upgrade to YOLO26 (latest Ultralytics model)
+**Agent:** claude-sonnet-4-6
+* Default model changed from `yolov8n.pt` → `yolo26n.pt` in config.py and camera.py; `_BUILTIN_MODELS` in cameras.py now leads with the full YOLO26 family (n/s/m/l/x + seg/pose/obb/cls variants); frontend fallback list updated to YOLO26 variants; ultralytics pinned to >=8.4.0
+* **Handoff:** Run `pip install -U ultralytics` in the backend container before starting — `yolo26n.pt` auto-downloads on first inference call; existing cameras in SQLite still reference `yolov8n.pt` and will continue to work.
+
+## [2026-06-24] - Fix invisible boxes + add Pose/Trails client-side rendering
+**Agent:** claude-sonnet-4-6
+* Root cause of invisible boxes: SVG `strokeWidth="0.003"` with `vectorEffect="non-scaling-stroke"` = literally 0.003 screen pixels. Fixed to `strokeWidth="2"` + vectorEffect. Pose skeleton and trails now rendered as SVG client-side (not OpenCV). Backend auto-switches model: keypoints→yolo26n-pose.pt, masks→yolo26n-seg.pt, obb→yolo26n-obb.pt. Frontend hot-swapped via docker cp without full image rebuild.
+* **Handoff:** User must hard-refresh browser (Cmd+Shift+R) to load new JS. Only ONE feature type at a time makes sense (detect OR pose OR segment — not all together, different models). yolo26n.pt already cached; pose/seg models download on first use (~5-15MB each).
+
+## [2026-06-25] - Fix AI not starting on camera toggle (force=True)
+**Agent:** claude-sonnet-4-6
+* Root cause: `start()` called `_start_ai_worker(force=False)` — silently blocked if another camera held the AI slot. Fixed lines 477+480 to `force=True`. Frontend container was serving June 24 build; rebuilt with `docker compose build frontend && up -d frontend`.
+* **Handoff:** AI confirmed working: WebSocket sends `ai_enabled=true`, 15+ detections/frame at 2-3 AI fps. User must hard-refresh browser (Cmd+Shift+R at localhost:3000). cam_695c3fef has `boxes=true` in DB — toggle Detect on any camera while viewing page 1 to test.
+
+## [2026-06-25] - Remove Docker; fully native Mac stack
+**Agent:** claude-sonnet-4-6
+* Stopped all Docker containers. Backend now runs natively in `backend/.venv` (Python 3.13 + PyTorch MPS). Frontend built to `frontend/dist` and served directly by FastAPI SPA mount — no Nginx needed. mediamtx 1.19.1 downloaded as native ARM64 binary to `bin/mediamtx`. `start.sh` completely rewritten: Docker-free, auto-setups venv + frontend build + mediamtx on first run, starts all services natively. Single URL: http://localhost:8000 (serves both app and API). Backend uses `VS_YOLO_DEVICE=mps` directly — host-inference sidecar no longer needed.
+* **Handoff:** Run `./start.sh` from project root to launch everything. Backend DB at `backend/data/visionsense.db`. Logs: `/tmp/vs-mediamtx.log`, `/tmp/vs-backend.log`. If frontend changes, run `cd frontend && npm run build` to rebuild dist. `host-inference/` still exists but is unused — backend uses MPS natively now.
+
+## [2026-06-25] - Model switch fix: warmup on pipeline change + preload all at startup
+**Agent:** claude-sonnet-4-6
+* Added `POST /warmup` to host server — pre-loads model into MPS cache without a frame. Backend `patch_pipeline` calls warmup as a fire-and-forget async task whenever `model` or `features` changes. Inference timeout raised 15s→120s (covers download+JIT). Added startup preloader: background thread downloads all size×variant combos (N/S/M/L × detect/seg/pose/obb = 16 models) when server starts. Size list configurable via `PRELOAD_SIZES` env var (default: n,s,m,l; x excluded). Server starts immediately; preload runs behind it.
+* **Handoff:** Model switch now: (1) UI sends PATCH → backend triggers warmup → host loads model in 5-30s. (2) AI worker's next frame arrives → model already cached → inference is instant. If warmup hasn't finished, inference call blocks (up to 120s) until model loads. Preload log visible in `/tmp/host-inference.log`. To include X model at startup: `PRELOAD_SIZES=n,s,m,l,x .venv/bin/python3 server.py`.
+
+## [2026-06-25] - Host MPS inference sidecar (10x faster than Docker CPU)
+**Agent:** claude-sonnet-4-6
+* Created `host-inference/server.py` (FastAPI, port 9020) running on Mac host with MPS (Metal). Backend sends JPEG frames via `POST /infer` to `host.docker.internal:9020` instead of running YOLO locally. Added `VS_REMOTE_INFERENCE_URL` to `config.py` + `docker-compose.mac.yml`. Falls back to local CPU if host unreachable. Measured: yolo26n-seg MPS=11ms vs CPU=60ms (5x), M model ~30ms vs 325ms (10x).
+* **Handoff:** Host server runs as a background process — start with `cd host-inference && ./start.sh`. Venv at `host-inference/.venv`. Server must be running BEFORE enabling AI on any camera (backend falls back to slow CPU otherwise). Model files download to `~/Library/Caches/torch/hub` on first use. To disable and revert to Docker CPU, remove `VS_REMOTE_INFERENCE_URL` from docker-compose.mac.yml and rebuild.
+
+## [2026-06-25] - Fix segment visualization: send polygon data + SVG polygon overlay
+**Agent:** claude-sonnet-4-6
+* Backend `_extract_detections` now includes `segments: [[x,y],...]` from `results.masks.xyn` (normalized polygon, downsampled to max 80 pts). Frontend `Detection` type gains `segments` field. `DetectionOverlay` renders `<polygon>` with 25% fill + colored stroke when `showSegments=true`. `CameraFeed` passes `showSegments={features.masks || features.semantic}`. Backend hot-patched via docker cp; frontend rebuilt.
+* **Handoff:** Segment masks now render as colored SVG polygons over the WebRTC feed. Hard-refresh browser (Cmd+Shift+R). If polygons appear jagged, adjust downsample step in `_extract_detections` (line: `step = max(1, len(poly) // 80)`). Semantic still shows same polygon overlay — true per-pixel semantic coloring requires render=True on frames.
+
+## [2026-06-25] - Right sidebar redesign: Controls, Feature dropdown, Class filter
+**Agent:** claude-sonnet-4-6
+* Moved Controls (Confidence/IOU/ModelSize) from LeftSidebar to top of RightSidebar; Feature toggles replaced with single Mode dropdown (None/Detect/Segment/Pose/OBB/Semantic) + Labels/Trails/Track chips; Applications section now collapsible; COCO-80 class filter added (search+tags, frontend-only filtering of detections). `classFilters` added to Zustand store; `CameraFeed.tsx` filters detections before passing to overlay. Fixed `showBoxes` to exclude semantic.
+* **Handoff:** All changes are frontend-only. RightSidebar.tsx is now self-contained (no sub-components needed). FeatureToggles.tsx and ApplicationToggles.tsx are still on disk but not used — safe to delete. Class filter is UI-state only (not persisted to backend or localStorage).
+
+## [2026-06-25] - Auto model variant selection + size-only UI
+**Agent:** claude-sonnet-4-6
+* `_effective_model()` now accepts bare size names (`yolo26n`, `yolo26m` etc.) — strips any suffix then appends correct variant based on features: boxes→.pt, masks/semantic→-seg.pt, keypoints→-pose.pt, obb→-obb.pt. `/api/models` now returns 5 size objects (N/S/M/L/X) instead of full model filenames. DB migrated: all 16 cameras updated from `yolo26n.pt` → `yolo26n`.
+* **Handoff:** Frontend shows N/S/M/L/X pill buttons instead of model dropdown. Selecting "N" stores `yolo26n`; backend picks `yolo26n.pt` or `yolo26n-pose.pt` etc. automatically. cam_695c3fef now has `model=yolo26m` with `boxes=true` — AI running at ~3fps CPU.
+
+## [2026-06-25] - Fix native WebRTC video feed (NVR HEVC → H.264 bridge)
+**Agent:** claude-sonnet-4-6
+* Root cause: NVR sends HEVC only; Chrome needs H.264; mediamtx needed `paths: all_others:` to accept RTSP publishers. Created two-stage FFmpeg bridge in `backend/app/core/ffmpeg_bridge.py` — Stage 1 copies HEVC from NVR to `{cam_id}_raw` (stable). Stage 2 transcodes HEVC → H.264 with libx264, retrying every 1.5s until it catches an IDR frame. AI worker reads from mediamtx H.264 (not NVR directly). `media_agent_client.py` delegates to `ffmpeg_bridge.py`. WHEP confirmed working with H.264 SDP answer.
+* **Handoff:** Video appears ~5-15s after camera starts (stage 2 retries). `start.sh` now writes mediamtx.yml with `paths: all_others:`. If video disappears briefly, stage 2 is restarting (self-heals in ~5s). C++ media agent unused for video.
+
+## [2026-06-25] - Box alignment fix + full-resolution inference + detection lag fix
+**Agent:** claude-sonnet-4-6
+* `OverlayCanvas.tsx`: replaced flat `x * clientWidth` mapping with object-cover-aware transform (computes scale+crop offset from `videoEl.videoWidth/Height` vs `clientWidth/Height`) — boxes/keypoints/segments now align correctly with video regardless of container aspect ratio.
+* `inference_engine.py`: `imgsz` now dynamically set to `ceil(max(h,w)/32)*32` (native frame resolution, no downscale). `websocket.py` + `camera_manager.py`: detection push bypasses 200ms timer — inference thread calls callback immediately, asyncio queue wakes broadcaster, overlay lag reduced from ~200ms to ~5ms.
+* **Handoff:** `useStore.ts` `updateTelemetry` now merges (not replaces) so fast detection pushes (detections/trails/ai_fps) and slow polls (video_fps/status) coexist without wiping each other. Live Counts section removed from LeftSidebar.

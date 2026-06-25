@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import cv2
+import httpx
 from fastapi import APIRouter, HTTPException, status
 from starlette.concurrency import run_in_threadpool
 
@@ -116,7 +117,29 @@ async def patch_pipeline(cam_id: str, body: PatchPipelineRequest):
     success = camera_manager.update_pipeline(cam_id, new_pipeline)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update pipeline")
+
+    # Pre-warm the host inference server when model or features change
+    if settings.remote_inference_url and ("model" in patch or "features" in patch):
+        import asyncio
+        asyncio.create_task(_warmup_host(new_pipeline))
+
     return camera_manager.get(cam_id)
+
+
+async def _warmup_host(pipeline: PipelineConfig):
+    """Fire-and-forget: tell host inference server to pre-load the new model."""
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            url = settings.remote_inference_url.rstrip("/") + "/warmup"
+            payload = {
+                "model": pipeline.model,
+                "features": pipeline.features.model_dump(),
+            }
+            resp = await client.post(url, json=payload)
+            data = resp.json()
+            logger.info(f"Host warmup: {data.get('model')} → {data.get('status')} ({data.get('load_ms', 0)}ms)")
+    except Exception as e:
+        logger.debug(f"Host warmup skipped: {e}")
 
 
 # ── Channel probing ───────────────────────────────────────────────────────────
@@ -253,72 +276,16 @@ async def list_devices() -> List[Dict[str, Any]]:
 
 # ── Model discovery ───────────────────────────────────────────────────────────
 
-# Well-known ultralytics model names (auto-downloaded if used)
-_BUILTIN_MODELS = [
-    # YOLOv8
-    "yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "yolov8x.pt",
-    "yolov8n-seg.pt", "yolov8s-seg.pt", "yolov8m-seg.pt",
-    "yolov8n-pose.pt", "yolov8s-pose.pt",
-    "yolov8n-obb.pt", "yolov8s-obb.pt",
-    "yolov8n-cls.pt", "yolov8s-cls.pt",
-    # YOLOv9
-    "yolov9c.pt", "yolov9e.pt",
-    # YOLOv10
-    "yolov10n.pt", "yolov10s.pt", "yolov10m.pt",
-    # YOLO11
-    "yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolo11l.pt", "yolo11x.pt",
-    "yolo11n-seg.pt", "yolo11s-seg.pt",
-    "yolo11n-pose.pt", "yolo11s-pose.pt",
-    # YOLO-World / YOLOE (open vocab)
-    "yolov8s-worldv2.pt",
-    "yoloe-11s-seg.pt",
+_MODEL_SIZES = [
+    {"id": "yolo26n", "label": "Nano",   "description": "Fastest, least accurate"},
+    {"id": "yolo26s", "label": "Small",  "description": "Fast, good accuracy"},
+    {"id": "yolo26m", "label": "Medium", "description": "Balanced"},
+    {"id": "yolo26l", "label": "Large",  "description": "Accurate, slower"},
+    {"id": "yolo26x", "label": "XLarge", "description": "Most accurate, slowest"},
 ]
 
 
 @router.get("/models")
 async def list_models() -> List[Dict[str, Any]]:
-    """
-    Return:
-    - Built-in ultralytics model names (always available, auto-downloaded on first use)
-    - Any .pt files found in the configured weights directory
-    """
-    models: List[Dict[str, Any]] = []
-
-    # Scan local weights dir
-    local_files: set = set()
-    weights_dir = settings.models_dir
-    if weights_dir.exists():
-        for pt in sorted(weights_dir.glob("*.pt")):
-            local_files.add(pt.name)
-            models.append({
-                "name": pt.name,
-                "path": str(pt),
-                "source": "local",
-                "size_mb": round(pt.stat().st_size / 1_048_576, 1),
-            })
-
-    # Also check ultralytics default download dir
-    ult_dir = Path.home() / ".ultralytics" / "assets"
-    if ult_dir.exists():
-        for pt in sorted(ult_dir.glob("*.pt")):
-            if pt.name not in local_files:
-                local_files.add(pt.name)
-                models.append({
-                    "name": pt.name,
-                    "path": str(pt),
-                    "source": "ultralytics_cache",
-                    "size_mb": round(pt.stat().st_size / 1_048_576, 1),
-                })
-
-    # Append built-ins not already present
-    existing_names = {m["name"] for m in models}
-    for name in _BUILTIN_MODELS:
-        if name not in existing_names:
-            models.append({
-                "name": name,
-                "path": name,  # ultralytics will auto-download
-                "source": "builtin",
-                "size_mb": None,
-            })
-
-    return models
+    """Return available model sizes. Variant (.pt/-seg/-pose/-obb) is chosen automatically from active features."""
+    return _MODEL_SIZES

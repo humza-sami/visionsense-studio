@@ -8,8 +8,11 @@ The server broadcasts a JSON message every ~200ms for each active camera:
 {
     "cam_id":             "cam_01",
     "fps":                24.3,
+    "video_fps":          25.0,
+    "ai_fps":             8.2,
     "inference_ms":       18,
     "counts":             {"person": 7},
+    "detections":         [{"x1": 0.1, "y1": 0.2, "x2": 0.3, "y2": 0.7}],
     "application_outputs": { ... },
     "alerts":             [{"type": "...", "ts": ..., "detail": "..."}]
 }
@@ -27,7 +30,7 @@ from typing import Set
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.config import settings
-from app.core.camera_manager import camera_manager
+from app.core.camera_manager import camera_manager, set_detection_push_cb
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
@@ -80,19 +83,45 @@ _manager = ConnectionManager()
 async def _telemetry_broadcast_loop():
     """
     Runs as a background asyncio task (started in main.py on_startup).
-    Collects telemetry from all active cameras and broadcasts to WS clients.
+
+    Two-tier broadcast:
+    1. Immediate — inference thread pushes detections via set_detection_push_cb();
+       this loop wakes instantly and broadcasts to all WS clients.
+    2. Periodic fallback (200ms) — polls video-only cameras for fps/status updates.
     """
-    interval = settings.telemetry_interval_ms / 1000.0  # convert ms → seconds
-    logger.info(f"Telemetry broadcaster started (interval={interval}s)")
+    loop = asyncio.get_running_loop()
+    push_q: asyncio.Queue = asyncio.Queue(maxsize=500)
+
+    def _push_from_thread(payload: dict) -> None:
+        try:
+            loop.call_soon_threadsafe(push_q.put_nowait, payload)
+        except Exception:
+            pass
+
+    set_detection_push_cb(_push_from_thread)
+    interval = settings.telemetry_interval_ms / 1000.0
+    logger.info(f"Telemetry broadcaster started (immediate push + {interval}s fallback poll)")
+
     while True:
         try:
+            # Wake immediately when a detection arrives; timeout → periodic poll
+            payload = await asyncio.wait_for(push_q.get(), timeout=interval)
             if _manager.count > 0:
-                all_tele = camera_manager.get_all_telemetry()
-                for tele in all_tele:
-                    await _manager.broadcast(tele)
-        except Exception as e:
-            logger.error(f"Telemetry broadcast error: {e}", exc_info=True)
-        await asyncio.sleep(interval)
+                await _manager.broadcast(payload)
+                # Drain any additional frames that queued during the broadcast
+                while not push_q.empty():
+                    try:
+                        await _manager.broadcast(push_q.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+        except asyncio.TimeoutError:
+            # No inference pushes for `interval` seconds — poll for video-only cameras
+            try:
+                if _manager.count > 0:
+                    for tele in camera_manager.get_all_telemetry():
+                        await _manager.broadcast(tele)
+            except Exception as e:
+                logger.error(f"Telemetry poll error: {e}", exc_info=True)
 
 
 # ── WebSocket route ───────────────────────────────────────────────────────────

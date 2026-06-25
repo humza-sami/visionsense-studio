@@ -46,6 +46,16 @@ from .solutions import BaseSolution, create_solution
 
 logger = logging.getLogger(__name__)
 
+# Callback registered by the WebSocket broadcaster to receive per-inference pushes.
+# Set via set_detection_push_cb(); called from CameraWorker inference thread.
+_detection_push_cb: Optional[Any] = None
+
+
+def set_detection_push_cb(cb: Any) -> None:
+    global _detection_push_cb
+    _detection_push_cb = cb
+
+
 # Keep each RTSP decoder lightweight when many cameras are active.
 os.environ.setdefault(
     "OPENCV_FFMPEG_CAPTURE_OPTIONS",
@@ -72,6 +82,8 @@ class TelemetryCollector:
         self._frame_times: deque = deque(maxlen=window)
         self._inference_times: deque = deque(maxlen=window)
         self.counts: Dict[str, int] = {}
+        self.detections: List[Dict[str, Any]] = []
+        self.trails: Dict[int, list] = {}
         self.application_outputs: Dict[str, Any] = {}
         self.alerts: list = []
 
@@ -85,7 +97,7 @@ class TelemetryCollector:
         if len(self._frame_times) < 2:
             return 0.0
         span = self._frame_times[-1] - self._frame_times[0]
-        return round(len(self._frame_times) / span, 1) if span > 0 else 0.0
+        return round((len(self._frame_times) - 1) / span, 1) if span > 0 else 0.0
 
     @property
     def avg_inference_ms(self) -> float:
@@ -100,6 +112,8 @@ class TelemetryCollector:
             "fps": self.fps,
             "inference_ms": self.avg_inference_ms,
             "counts": dict(self.counts),
+            "detections": list(self.detections),
+            "trails": {str(k): v for k, v in self.trails.items()},
             "application_outputs": dict(self.application_outputs),
             "alerts": alerts,
         }
@@ -113,12 +127,17 @@ class CameraWorker(threading.Thread):
     Captures → infers → applies solutions → enqueues JPEG bytes.
     """
 
-    def __init__(self, camera: Camera, device: str = "cpu"):
+    def __init__(self, camera: Camera, device: str = "cpu",
+                 source_url_override: Optional[str] = None):
         super().__init__(daemon=True, name=f"cam-{camera.id}")
         self.camera = camera
         self._device = device
         self._stop_event = threading.Event()
         self._pipeline_lock = threading.Lock()
+        # When set, AI capture reads from this URL instead of camera.source.url.
+        # Used so the FFmpeg bridge owns the single NVR connection and OpenCV
+        # reads locally from mediamtx (rtsp://127.0.0.1:8554/{id}).
+        self._source_url_override = source_url_override
 
         # Frame queue for MJPEG consumers (maxsize keeps latency low)
         self.frame_queue: queue.Queue[bytes] = queue.Queue(
@@ -129,7 +148,9 @@ class CameraWorker(threading.Thread):
         self._solutions: Dict[str, BaseSolution] = {}
         self._engine = InferenceEngine(device=device)
         self._frame_counter = 0
-        self._last_output_time = 0.0
+        self._latest_frame: Optional[np.ndarray] = None
+        self._latest_sequence = 0
+        self._frame_condition = threading.Condition()
 
         # Rebuild solutions from initial config
         self._rebuild_solutions(camera.pipeline)
@@ -139,6 +160,8 @@ class CameraWorker(threading.Thread):
     def stop(self):
         """Signal the thread to exit."""
         self._stop_event.set()
+        with self._frame_condition:
+            self._frame_condition.notify_all()
 
     def update_pipeline(self, pipeline: PipelineConfig):
         """Hot-swap pipeline config (thread-safe)."""
@@ -156,123 +179,151 @@ class CameraWorker(threading.Thread):
     # ── Thread main loop ───────────────────────────────────────────────────────
 
     def run(self):
-        logger.info(f"[{self.camera.id}] Worker started")
+        logger.info(f"[{self.camera.id}] AI sidecar started")
         while not self._stop_event.is_set():
             try:
-                self._stream_loop()
+                self._capture_and_infer()
             except Exception as e:
                 logger.error(f"[{self.camera.id}] Unexpected error: {e}", exc_info=True)
             if not self._stop_event.is_set():
-                self.camera.status = "error"
-                self.camera.error_message = "Stream ended, reconnecting..."
-                logger.info(f"[{self.camera.id}] Reconnecting in {settings.rtsp_reconnect_delay_s}s")
+                logger.info(
+                    f"[{self.camera.id}] AI source reconnecting in "
+                    f"{settings.rtsp_reconnect_delay_s}s"
+                )
                 time.sleep(settings.rtsp_reconnect_delay_s)
 
-        self.camera.status = "stopped"
-        logger.info(f"[{self.camera.id}] Worker stopped")
+        logger.info(f"[{self.camera.id}] AI sidecar stopped")
 
-    def _stream_loop(self):
-        """Open capture, read frames, infer, enqueue."""
+    def _capture_and_infer(self):
+        """Continuously drain RTSP while inference consumes only the newest frame."""
         cap = self._open_capture()
         if cap is None:
-            self.camera.status = "error"
-            self.camera.error_message = "Failed to open video source"
             return
 
-        self.camera.status = "live"
-        self.camera.error_message = None
-        logger.info(f"[{self.camera.id}] Stream opened: {self._source_str()}")
+        logger.info(f"[{self.camera.id}] AI source opened: {self._source_str()}")
+        capture_done = threading.Event()
+        inference_thread = threading.Thread(
+            target=self._inference_loop,
+            args=(capture_done,),
+            daemon=True,
+            name=f"ai-infer-{self.camera.id}",
+        )
+        inference_thread.start()
 
         try:
             while not self._stop_event.is_set():
                 ret, raw_frame = cap.read()
                 if not ret or raw_frame is None:
-                    logger.warning(f"[{self.camera.id}] Frame read failed")
+                    logger.warning(f"[{self.camera.id}] AI frame read failed")
                     break
-
-                self._frame_counter += 1
-
-                # Get current pipeline (lock briefly)
-                with self._pipeline_lock:
-                    pipeline = self.camera.pipeline
-                    solutions = dict(self._solutions)
-
-                # The NVR may send 20–30 fps per channel, but encoding all of
-                # those frames for a 16-camera dashboard wastes CPU. Continue
-                # reading to keep RTSP buffers fresh and emit at the UI rate.
-                now = time.perf_counter()
-                output_interval = 1.0 / max(settings.stream_target_fps, 1.0)
-                if now - self._last_output_time < output_interval:
-                    continue
-                self._last_output_time = now
-
-                # Streams start as raw video. Load/run the model only after the
-                # user enables an AI feature or application for this camera.
-                if not _pipeline_uses_ai(pipeline):
-                    self.telemetry.record_frame(0.0)
-                    self.telemetry.counts = {}
-                    self.telemetry.application_outputs = {}
-                    jpg = self._encode_jpeg(raw_frame)
-                    self._try_enqueue(jpg)
-                    continue
-
-                # Frame skip
-                if self._frame_counter % pipeline.frame_skip != 0:
-                    # Still enqueue the raw frame for smooth video
-                    jpg = self._encode_jpeg(raw_frame)
-                    self._try_enqueue(jpg)
-                    continue
-
-                # Inference
-                annotated, results, tele = self._engine.infer(raw_frame, pipeline)
-
-                # Solutions layer
-                all_alerts = []
-                for app_cfg in pipeline.applications:
-                    if not app_cfg.enabled:
-                        continue
-                    sol = solutions.get(app_cfg.type)
-                    if sol is None:
-                        continue
-                    try:
-                        annotated, sol_output = sol.process(
-                            annotated, results, app_cfg.config
-                        )
-                        self.telemetry.application_outputs[app_cfg.type] = sol_output
-                        all_alerts.extend(sol.pop_alerts())
-                    except Exception as e:
-                        logger.debug(f"[{self.camera.id}] Solution '{app_cfg.type}' error: {e}")
-
-                # Update telemetry
-                self.telemetry.record_frame(tele["inference_ms"])
-                self.telemetry.counts = tele["counts"]
-                if all_alerts:
-                    self.telemetry.alerts.extend(all_alerts)
-
-                # Encode and enqueue
-                jpg = self._encode_jpeg(annotated)
-                self._try_enqueue(jpg)
+                with self._frame_condition:
+                    self._latest_frame = raw_frame
+                    self._latest_sequence += 1
+                    self._frame_condition.notify()
 
         finally:
+            capture_done.set()
+            with self._frame_condition:
+                self._frame_condition.notify_all()
+            inference_thread.join(timeout=5)
             cap.release()
-            logger.info(f"[{self.camera.id}] Capture released")
+            logger.info(f"[{self.camera.id}] AI capture released")
+
+    def _inference_loop(self, capture_done: threading.Event):
+        """Infer sequentially; skip directly to the latest captured frame."""
+        consumed_sequence = 0
+        while not self._stop_event.is_set() and not capture_done.is_set():
+            with self._frame_condition:
+                self._frame_condition.wait_for(
+                    lambda: (
+                        self._stop_event.is_set()
+                        or capture_done.is_set()
+                        or self._latest_sequence > consumed_sequence
+                    ),
+                    timeout=1.0,
+                )
+                if self._stop_event.is_set() or capture_done.is_set():
+                    return
+                frame = self._latest_frame
+                consumed_sequence = self._latest_sequence
+            if frame is None:
+                continue
+
+            self._frame_counter += 1
+            with self._pipeline_lock:
+                pipeline = self.camera.pipeline
+                solutions = dict(self._solutions)
+            if not _pipeline_uses_ai(pipeline):
+                continue
+            if self._frame_counter % pipeline.frame_skip != 0:
+                continue
+
+            annotated, results, tele = self._engine.infer(
+                frame,
+                pipeline,
+                render=False,
+                cam_id=self.camera.id,
+            )
+            all_alerts = []
+            for app_cfg in pipeline.applications:
+                if not app_cfg.enabled:
+                    continue
+                solution = solutions.get(app_cfg.type)
+                if solution is None:
+                    continue
+                try:
+                    annotated, output = solution.process(
+                        annotated,
+                        results,
+                        app_cfg.config,
+                    )
+                    self.telemetry.application_outputs[app_cfg.type] = output
+                    all_alerts.extend(solution.pop_alerts())
+                except Exception as exc:
+                    logger.debug(
+                        f"[{self.camera.id}] Solution '{app_cfg.type}' error: {exc}"
+                    )
+
+            self.telemetry.record_frame(tele["inference_ms"])
+            self.telemetry.counts = tele["counts"]
+            self.telemetry.detections = tele.get("detections", [])
+            if pipeline.features.trails and frame is not None:
+                if tele.get("remote_trails"):
+                    self.telemetry.trails = tele["remote_trails"]
+                else:
+                    h, w = frame.shape[:2]
+                    self.telemetry.trails = self._engine.get_trails(w, h)
+            if all_alerts:
+                self.telemetry.alerts.extend(all_alerts)
+
+            # Push detection result immediately to WebSocket (bypasses 200ms timer)
+            if _detection_push_cb is not None:
+                try:
+                    _detection_push_cb({
+                        "cam_id": self.camera.id,
+                        "ai_enabled": True,
+                        "ai_fps": round(self.telemetry.fps, 1),
+                        "inference_ms": round(self.telemetry.avg_inference_ms, 1),
+                        "counts": dict(self.telemetry.counts),
+                        "detections": list(self.telemetry.detections),
+                        "trails": {str(k): v for k, v in self.telemetry.trails.items()},
+                    })
+                except Exception:
+                    pass
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _open_capture(self) -> Optional[cv2.VideoCapture]:
         """Open cv2.VideoCapture with appropriate flags."""
-        self.camera.status = "connecting"
         source = self.camera.source
         try:
             if source.type == "rtsp":
-                url = source.url
+                # Prefer the local mediamtx URL when the FFmpeg bridge owns the
+                # NVR connection — avoids competing for the NVR's single RTSP slot.
+                url = self._source_url_override or source.url
                 if not url:
                     logger.error(f"[{self.camera.id}] RTSP url is empty")
                     return None
-                # Force TCP transport to avoid UDP packet loss
-                os_env_url = url
-                if "rtsp_transport" not in url.lower():
-                    os_env_url += "?rtsp_transport=tcp" if "?" not in url else "&rtsp_transport=tcp"
                 cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, settings.rtsp_timeout_ms)
@@ -368,6 +419,7 @@ class CameraManager:
             camera.id: camera for camera in self._repository.list()
         }
         self._workers: Dict[str, CameraWorker] = {}
+        self._ai_camera_id: Optional[str] = None
         self._native_ids: set[str] = set()
         self._active_ids: set[str] = set()
         self._native_metrics: Dict[str, Dict[str, Any]] = {}
@@ -419,19 +471,28 @@ class CameraManager:
         with self._lock:
             self._active_ids.add(cam_id)
             known_native = cam_id in self._native_ids
-        if known_native:
-            if any(
+        started = False
+        actual_native = (
+            camera.source.type == "rtsp"
+            and any(
                 item.get("id") == cam_id for item in list_native_pipelines()
-            ):
-                return True
+            )
+        )
+        if actual_native:
+            with self._lock:
+                self._native_ids.add(cam_id)
+            camera.status = "live"
+            started = True
+        elif known_native:
             with self._lock:
                 self._native_ids.discard(cam_id)
 
         if (
+            not started
+            and
             settings.prefer_native_media
             and camera.source.type == "rtsp"
             and camera.source.url
-            and not _pipeline_uses_ai(camera.pipeline)
         ):
             camera.status = "connecting"
             camera.error_message = None
@@ -440,21 +501,75 @@ class CameraManager:
                     self._native_ids.add(cam_id)
                 camera.status = "live"
                 logger.info(f"Native camera started: {cam_id}")
-                return True
-            logger.warning(
-                f"Native media agent unavailable for {cam_id}; using OpenCV fallback"
-            )
+                started = True
+            else:
+                logger.warning(f"Native media agent unavailable for {cam_id}")
 
+        if _pipeline_uses_ai(camera.pipeline):
+            started = self._start_ai_worker(camera, force=True) or started
+        elif camera.source.type != "rtsp" and not started:
+            # Webcam/USB still depends on the Python worker for capture.
+            started = self._start_ai_worker(camera, force=True)
+        return started
+
+    def _start_ai_worker(self, camera: Camera, force: bool) -> bool:
+        """Start the single bounded AI sidecar without touching native video."""
+        workers_to_stop: List[CameraWorker] = []
         with self._lock:
-            if cam_id in self._workers:
-                w = self._workers[cam_id]
-                if w.is_alive():
-                    return True  # already running
-                del self._workers[cam_id]
-            worker = CameraWorker(camera, device=self._device)
-            self._workers[cam_id] = worker
+            if (
+                not force
+                and self._ai_camera_id is not None
+                and self._ai_camera_id != camera.id
+            ):
+                return False
+            existing = self._workers.get(camera.id)
+            if existing is not None and existing.is_alive():
+                existing.update_pipeline(camera.pipeline)
+                self._ai_camera_id = camera.id
+                return True
+            if existing is not None:
+                self._workers.pop(camera.id, None)
+
+            # This product currently allocates one AI slot. Starting AI on a
+            # different camera releases the previous sidecar, while all native
+            # WebRTC video pipelines continue independently.
+            for other_id, worker in list(self._workers.items()):
+                if other_id != camera.id:
+                    workers_to_stop.append(worker)
+                    self._workers.pop(other_id, None)
+
+            # If FFmpeg bridge owns the NVR connection, read AI frames from the
+            # local mediamtx restream instead of connecting to the NVR directly.
+            source_override: Optional[str] = None
+            if camera.id in self._native_ids and camera.source.type == "rtsp":
+                source_override = f"rtsp://127.0.0.1:8554/{camera.id}"
+                logger.info(
+                    f"[{camera.id}] AI worker reading from local mediamtx restream"
+                )
+
+            worker = CameraWorker(camera, device=self._device,
+                                  source_url_override=source_override)
+            self._workers[camera.id] = worker
+            self._ai_camera_id = camera.id
+
+        for old_worker in workers_to_stop:
+            old_worker.stop()
+        for old_worker in workers_to_stop:
+            old_worker.join(timeout=5)
         worker.start()
-        logger.info(f"Camera started: {cam_id}")
+        logger.info(f"AI assigned to camera: {camera.id}")
+        return True
+
+    def _stop_ai_worker(self, cam_id: str) -> bool:
+        with self._lock:
+            worker = self._workers.pop(cam_id, None)
+            if self._ai_camera_id == cam_id:
+                self._ai_camera_id = None
+        if worker is None:
+            return False
+        worker.stop()
+        worker.join(timeout=5)
+        logger.info(f"AI released from camera: {cam_id}")
         return True
 
     def stop(self, cam_id: str) -> bool:
@@ -472,9 +587,8 @@ class CameraManager:
         if worker:
             worker.stop()
             worker.join(timeout=10)
-            logger.info(f"Camera stopped: {cam_id}")
-            return True
-        return was_native
+            logger.info(f"AI stopped: {cam_id}")
+        return was_native or worker is not None
 
     def activate_only(self, camera_ids: List[str]) -> List[Camera]:
         """Stop every other worker and start at most two requested cameras."""
@@ -497,6 +611,8 @@ class CameraManager:
             ]
             for cam_id, _ in stopping:
                 self._workers.pop(cam_id, None)
+                if self._ai_camera_id == cam_id:
+                    self._ai_camera_id = None
                 camera = self._cameras.get(cam_id)
                 if camera is not None:
                     camera.status = "stopped"
@@ -547,12 +663,15 @@ class CameraManager:
         if worker:
             worker.update_pipeline(pipeline)
         needs_ai = _pipeline_uses_ai(pipeline)
-        if was_native and needs_ai:
-            self.stop(cam_id)
-            return self.start(cam_id)
-        if worker_was_running and not needs_ai and camera.source.type == "rtsp":
-            self.stop(cam_id)
-            return self.start(cam_id)
+        with self._lock:
+            is_active = cam_id in self._active_ids
+        if is_active and camera.source.type == "rtsp" and not was_native:
+            if not self.start(cam_id):
+                return False
+        if needs_ai and is_active:
+            return self._start_ai_worker(camera, force=True)
+        if worker_was_running and not needs_ai:
+            self._stop_ai_worker(cam_id)
         return True
 
     def is_native(self, cam_id: str) -> bool:
@@ -590,6 +709,7 @@ class CameraManager:
             camera = self._cameras.get(cam_id)
             is_native = cam_id in self._native_ids
             is_active = cam_id in self._active_ids
+        ai_snapshot = worker.telemetry.snapshot() if worker is not None else None
         if is_native and camera is not None:
             native = self._native_pipeline(cam_id)
             if native is None:
@@ -619,8 +739,12 @@ class CameraManager:
                     "cam_id": cam_id,
                     "status": camera.status,
                     "fps": 0.0,
+                    "video_fps": 0.0,
+                    "ai_fps": ai_snapshot["fps"] if ai_snapshot else 0.0,
+                    "ai_enabled": ai_snapshot is not None,
                     "inference_ms": 0.0,
                     "counts": {},
+                    "detections": [],
                     "application_outputs": {},
                     "alerts": [],
                 }
@@ -634,21 +758,36 @@ class CameraManager:
                 "cam_id": cam_id,
                 "status": camera.status,
                 "fps": float(native.get("fps", 0.0)),
-                "inference_ms": 0.0,
-                "counts": {},
-                "application_outputs": {},
-                "alerts": [],
+                "video_fps": float(native.get("fps", 0.0)),
+                "ai_fps": ai_snapshot["fps"] if ai_snapshot else 0.0,
+                "ai_enabled": ai_snapshot is not None,
+                "inference_ms": (
+                    ai_snapshot["inference_ms"] if ai_snapshot else 0.0
+                ),
+                "counts": ai_snapshot["counts"] if ai_snapshot else {},
+                "detections": ai_snapshot["detections"] if ai_snapshot else [],
+                "trails": ai_snapshot["trails"] if ai_snapshot else {},
+                "application_outputs": (
+                    ai_snapshot["application_outputs"] if ai_snapshot else {}
+                ),
+                "alerts": ai_snapshot["alerts"] if ai_snapshot else [],
             }
         if worker is None or camera is None:
             return None
-        snap = worker.telemetry.snapshot()
+        snap = ai_snapshot or worker.telemetry.snapshot()
         snap["cam_id"] = cam_id
         snap["status"] = camera.status
+        snap["video_fps"] = snap["fps"]
+        snap["ai_fps"] = snap["fps"]
+        snap["ai_enabled"] = True
         return snap
 
     def get_all_telemetry(self) -> List[Dict[str, Any]]:
         with self._lock:
-            cam_ids = list(self._workers.keys()) + list(self._native_ids)
+            cam_ids = list(dict.fromkeys([
+                *self._native_ids,
+                *self._workers.keys(),
+            ]))
         return [t for cid in cam_ids if (t := self.get_telemetry(cid)) is not None]
 
     # ── Shutdown ──────────────────────────────────────────────────────────────

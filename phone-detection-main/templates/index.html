@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Phone Detection Monitor</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header>
+    <h1>Phone Detection Monitor</h1>
+    <div id="status-badge" class="badge">Live</div>
+  </header>
+
+  <main>
+    <!-- Video + canvas overlay -->
+    <div id="video-wrapper">
+      <div id="video-container">
+        <img id="stream-img" src="/stream" alt="Camera feed">
+        <canvas id="draw-canvas"></canvas>
+      </div>
+      <div id="mode-hint"></div>
+    </div>
+
+    <!-- Sidebar -->
+    <aside id="sidebar">
+
+      <section class="panel">
+        <h2>Camera</h2>
+        <div class="toggle-row">
+          <button id="mode-webcam-btn" class="toggle-btn active">Webcam</button>
+          <button id="mode-url-btn"    class="toggle-btn">IP Camera</button>
+        </div>
+
+        <div id="webcam-controls">
+          <label for="camera-select">Device</label>
+          <select id="camera-select"><option>Loading…</option></select>
+          <label for="resolution-select">Resolution</label>
+          <select id="resolution-select">
+            <option value="640x480">640 × 480</option>
+            <option value="1280x720">1280 × 720 (HD)</option>
+            <option value="1920x1080">1920 × 1080 (FHD)</option>
+            <option value="2560x1440">2560 × 1440 (QHD)</option>
+          </select>
+        </div>
+
+        <div id="url-controls" style="display:none">
+          <label for="camera-url">Stream URL</label>
+          <input id="camera-url" type="text"
+                 placeholder="rtsp://user:pass@ip:port/path">
+          <p class="hint-text" style="margin-top:4px">Resolution is set by the camera</p>
+        </div>
+
+        <button id="apply-camera-btn" class="btn-primary" style="margin-top:10px">Apply</button>
+      </section>
+
+      <section class="panel">
+        <h2>Model</h2>
+        <label for="model-select">YOLO26 Variant</label>
+        <select id="model-select">
+          <option value="yolo26n.pt">YOLO26n — Nano (fastest)</option>
+          <option value="yolo26s.pt">YOLO26s — Small</option>
+          <option value="yolo26m.pt">YOLO26m — Medium</option>
+          <option value="yolo26l.pt">YOLO26l — Large</option>
+          <option value="yolo26x.pt">YOLO26x — XL (most accurate)</option>
+        </select>
+        <p class="hint-text" style="margin-top:4px">First switch downloads the model (~20–100 MB)</p>
+        <button id="apply-model-btn" class="btn-primary" style="margin-top:8px">Apply Model</button>
+      </section>
+
+      <section class="panel">
+        <h2>Confidence</h2>
+        <label>Phone <span id="phone-conf-val"></span></label>
+        <input id="phone-conf" type="range" min="1" max="99" step="1">
+        <label style="margin-top:10px">Person <span id="person-conf-val"></span></label>
+        <input id="person-conf" type="range" min="1" max="99" step="1">
+      </section>
+
+      <section class="panel">
+        <h2>Regions</h2>
+        <p class="hint-text">Draw the area to monitor, then mark each chair as a zone.</p>
+        <button id="main-region-btn" class="btn-tool">Set Main Region</button>
+        <button id="add-zone-btn" class="btn-tool">Add Zone</button>
+        <div class="btn-row">
+          <button id="undo-zone-btn" class="btn-secondary">Undo Last</button>
+          <button id="clear-regions-btn" class="btn-danger">Clear All</button>
+        </div>
+        <button id="apply-regions-btn" class="btn-primary">Apply Regions</button>
+      </section>
+
+      <section class="panel">
+        <h2>Detection Stats</h2>
+        <div id="stats-list"><p class="empty-msg">No zones defined yet.</p></div>
+        <button id="reset-stats-btn" class="btn-secondary" style="margin-top:8px">Reset Timers</button>
+      </section>
+
+    </aside>
+  </main>
+
+  <div id="toast"></div>
+
+  <script>
+    const INITIAL_STATE = {{ initial_state | tojson | safe }};
+  </script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

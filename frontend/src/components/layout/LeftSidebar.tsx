@@ -1,13 +1,10 @@
-import { useState, useEffect } from 'react'
 import {
-  Camera, Activity, Users2, BellRing, SlidersHorizontal,
+  Camera, Activity, BellRing,
   Image, Circle, Trash2, Download, Video, PanelLeftClose
 } from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import { CameraCard } from '@/components/cameras/CameraCard'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Slider } from '@/components/ui/slider'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
@@ -22,14 +19,12 @@ const ALERT_COLORS: Record<string, string> = {
 export function LeftSidebar() {
   const {
     cameras, selectedCameraId, telemetry, alerts, clearAlerts,
-    selectCamera, updateCamera, removeCamera, setLeftSidebarCollapsed, setCameraPage,
+    selectCamera, removeCamera, setLeftSidebarCollapsed, setCameraPage,
   } = useStore()
 
-  const [models, setModels] = useState<string[]>(['yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt'])
   const selectedCamera = cameras.find((c) => c.id === selectedCameraId)
   const camTelemetry = selectedCameraId ? telemetry[selectedCameraId] : null
 
-  // Aggregate counts across all live cameras
   const aggregateCounts: Record<string, number> = {}
   cameras.forEach((cam) => {
     const t = telemetry[cam.id]
@@ -39,27 +34,6 @@ export function LeftSidebar() {
       })
     }
   })
-
-  useEffect(() => {
-    api.getModels().then(setModels).catch(() => {})
-  }, [])
-
-  async function updateThreshold(key: 'confidence' | 'iou', value: number) {
-    if (!selectedCamera) return
-    const newThresholds = { ...selectedCamera.pipeline.thresholds, [key]: value }
-    updateCamera(selectedCamera.id, { pipeline: { ...selectedCamera.pipeline, thresholds: newThresholds } })
-    try {
-      await api.updatePipeline(selectedCamera.id, { thresholds: newThresholds })
-    } catch { /* noop */ }
-  }
-
-  async function updateModel(model: string) {
-    if (!selectedCamera) return
-    updateCamera(selectedCamera.id, { pipeline: { ...selectedCamera.pipeline, model } })
-    try {
-      await api.updatePipeline(selectedCamera.id, { model })
-    } catch { /* noop */ }
-  }
 
   return (
     <div className="flex flex-col h-full bg-card border-r border-border/60 overflow-hidden">
@@ -139,26 +113,6 @@ export function LeftSidebar() {
 
           <Separator className="opacity-40" />
 
-          {/* Section: Live Counts */}
-          <SidebarSection icon={<Users2 className="w-3.5 h-3.5" />} title="LIVE COUNTS">
-            {Object.keys(aggregateCounts).length === 0 ? (
-              <p className="text-xs text-muted-foreground px-2 py-2">No detections yet</p>
-            ) : (
-              <div className="space-y-1.5">
-                {Object.entries(aggregateCounts).map(([label, count]) => (
-                  <div key={label} className="flex items-center justify-between px-2 py-1 rounded bg-secondary/30">
-                    <span className="text-xs text-foreground/80 capitalize">{label}</span>
-                    <Badge variant="secondary" className="text-xs font-mono tabular-nums h-5">
-                      {count}
-                    </Badge>
-                  </div>
-                ))}
-              </div>
-            )}
-          </SidebarSection>
-
-          <Separator className="opacity-40" />
-
           {/* Section: Alerts */}
           <SidebarSection
             icon={<BellRing className="w-3.5 h-3.5" />}
@@ -199,63 +153,6 @@ export function LeftSidebar() {
                 </div>
               )}
             </ScrollArea>
-          </SidebarSection>
-
-          <Separator className="opacity-40" />
-
-          {/* Section: Global Controls */}
-          <SidebarSection icon={<SlidersHorizontal className="w-3.5 h-3.5" />} title="CONTROLS">
-            <div className="space-y-4 px-1">
-              <div className="space-y-2">
-                <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">Confidence</span>
-                  <span className="tabular-nums text-foreground/80">
-                    {selectedCamera ? (selectedCamera.pipeline.thresholds.confidence * 100).toFixed(0) : '—'}%
-                  </span>
-                </div>
-                <Slider
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={[Math.round((selectedCamera?.pipeline.thresholds.confidence ?? 0.5) * 100)]}
-                  onValueChange={([v]) => updateThreshold('confidence', v / 100)}
-                  disabled={!selectedCamera}
-                />
-              </div>
-              <div className="space-y-2">
-                <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">IoU Threshold</span>
-                  <span className="tabular-nums text-foreground/80">
-                    {selectedCamera ? (selectedCamera.pipeline.thresholds.iou * 100).toFixed(0) : '—'}%
-                  </span>
-                </div>
-                <Slider
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={[Math.round((selectedCamera?.pipeline.thresholds.iou ?? 0.45) * 100)]}
-                  onValueChange={([v]) => updateThreshold('iou', v / 100)}
-                  disabled={!selectedCamera}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <span className="text-xs text-muted-foreground">AI Model</span>
-                <Select
-                  value={selectedCamera?.pipeline.model ?? ''}
-                  onValueChange={updateModel}
-                  disabled={!selectedCamera}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="Select model" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {models.map((m) => (
-                      <SelectItem key={m} value={m}>{m}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
           </SidebarSection>
 
           <Separator className="opacity-40" />

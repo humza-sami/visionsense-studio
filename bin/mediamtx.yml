@@ -1,0 +1,7 @@
+logLevel: warn
+rtspAddress: :8554
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+
+paths:
+  all_others:

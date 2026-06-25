@@ -27,9 +27,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - VS_YOLO_DEVICE=cpu
+      - VS_AI_IMAGE_SIZE=512
       - VS_MEDIA_AGENT_URL=http://host.docker.internal:9010
       - VS_PREFER_NATIVE_MEDIA=true
       - VS_DATABASE_PATH=/app/data/visionsense.db
+      - VS_REMOTE_INFERENCE_URL=http://host.docker.internal:9020
     restart: unless-stopped
     depends_on:
       - mediamtx

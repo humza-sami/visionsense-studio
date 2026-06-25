@@ -1,0 +1,23 @@
+services:
+  phone-detection:
+    build: .
+    working_dir: /workspace
+    command: python app.py
+    volumes:
+      - .:/workspace
+    devices:
+      - /dev/video0:/dev/video0
+      - /dev/video1:/dev/video1
+      - /dev/video2:/dev/video2
+      - /dev/video3:/dev/video3
+    group_add:
+      - video
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -11,6 +11,7 @@ export function CameraGrid() {
     cameraPage: page, setCameraPage: setPage, updateCamera,
   } = useStore()
   const [isSwitching, setIsSwitching] = useState(false)
+  const [visibilityVersion, setVisibilityVersion] = useState(0)
 
   const pageSize = 2
   const pageCount = Math.max(1, Math.ceil(cameras.length / pageSize))
@@ -27,7 +28,20 @@ export function CameraGrid() {
   }, [page, pageCount, setPage])
 
   useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        setVisibilityVersion((version) => version + 1)
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [])
+
+  useEffect(() => {
     if (visibleIds.length === 0) return
+    // Background/stale tabs must not fight the active operator tab for the
+    // globally bounded two-camera decoder allocation.
+    if (document.visibilityState !== 'visible') return
     let cancelled = false
     setIsSwitching(true)
     setSpotlight(null)
@@ -59,7 +73,7 @@ export function CameraGrid() {
     return () => {
       cancelled = true
     }
-  }, [visibleIdsKey, setSpotlight, updateCamera])
+  }, [visibleIdsKey, visibilityVersion, setSpotlight, updateCamera])
 
   useEffect(() => {
     if (!spotlightCameraId) return

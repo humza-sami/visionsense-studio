@@ -25,9 +25,10 @@ class Settings(BaseSettings):
     frontend_dist: Path = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
     # ── YOLO / models ─────────────────────────────────────────────────────────
-    default_model: str = "yolov8n.pt"
+    default_model: str = "yolo26n.pt"
     models_dir: Path = Path(__file__).resolve().parent / "weights"
     yolo_device: str = "cpu"  # "0" for first GPU, "cpu" for CPU
+    ai_image_size: int = 512  # bounded inference resolution; video stays 720p
 
     # ── Streaming ─────────────────────────────────────────────────────────────
     mjpeg_quality: int = 72          # JPEG encode quality 0–100
@@ -38,6 +39,12 @@ class Settings(BaseSettings):
     media_agent_url: str = "http://host.docker.internal:9010"
     media_agent_timeout_s: float = 2.0
     prefer_native_media: bool = True
+
+    # ── Host inference sidecar ────────────────────────────────────────────────
+    # When set, Docker backend delegates YOLO inference to this host-side server
+    # so it can use Metal/MPS on Mac instead of CPU inside Docker.
+    # Set via VS_REMOTE_INFERENCE_URL=http://host.docker.internal:9020
+    remote_inference_url: str = ""
 
     # ── Persistence ───────────────────────────────────────────────────────────
     data_dir: Path = Path(os.getenv("VS_DATA_DIR", Path(__file__).resolve().parents[1] / "data"))

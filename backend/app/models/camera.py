@@ -42,7 +42,7 @@ class ApplicationConfig(BaseModel):
 
 
 class PipelineConfig(BaseModel):
-    model: str = "yolov8n.pt"
+    model: str = "yolo26n"
     task: Literal["detect", "segment", "pose", "obb", "classify", "semantic"] = "detect"
     open_vocab_prompt: List[str] = Field(default_factory=list)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
@@ -112,7 +112,11 @@ class Alert(BaseModel):
 class TelemetryMessage(BaseModel):
     cam_id: str
     fps: float
+    video_fps: float = 0.0
+    ai_fps: float = 0.0
+    ai_enabled: bool = False
     inference_ms: float
     counts: Dict[str, int] = Field(default_factory=dict)
+    detections: List[Dict[str, Any]] = Field(default_factory=list)
     application_outputs: Dict[str, Any] = Field(default_factory=dict)
     alerts: List[Alert] = Field(default_factory=list)

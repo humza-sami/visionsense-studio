@@ -6,6 +6,7 @@ interface WebRTCFeedProps {
   retryToken: number
   onPlaying: () => void
   onUnavailable: () => void
+  onVideoEl?: (el: HTMLVideoElement | null) => void
 }
 
 const ICE_GATHER_TIMEOUT_MS = 3000
@@ -44,8 +45,14 @@ export function WebRTCFeed({
   retryToken,
   onPlaying,
   onUnavailable,
+  onVideoEl,
 }: WebRTCFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    onVideoEl?.(videoRef.current)
+    return () => onVideoEl?.(null)
+  }, [onVideoEl])
 
   useEffect(() => {
     const abortController = new AbortController()

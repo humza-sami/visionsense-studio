@@ -30,6 +30,10 @@ interface StoreState {
   telemetry: Record<string, Telemetry>
   updateTelemetry: (data: Telemetry) => void
 
+  // Class filter (per-camera, UI-only — not sent to backend)
+  classFilters: Record<string, string[]>
+  setClassFilter: (camId: string, classes: string[]) => void
+
   // Alerts
   alerts: Alert[]
   addAlert: (alert: Omit<Alert, 'id'>) => void
@@ -81,7 +85,17 @@ export const useStore = create<StoreState>()(
       telemetry: {},
       updateTelemetry: (data) =>
         set((state) => ({
-          telemetry: { ...state.telemetry, [data.cam_id]: data },
+          telemetry: {
+            ...state.telemetry,
+            [data.cam_id]: { ...state.telemetry[data.cam_id], ...data },
+          },
+        })),
+
+      // Class filter
+      classFilters: {},
+      setClassFilter: (camId, classes) =>
+        set((state) => ({
+          classFilters: { ...state.classFilters, [camId]: classes },
         })),
 
       // Alerts

@@ -16,10 +16,14 @@ import time
 from collections import defaultdict, deque
 from typing import Any, Dict, Optional, Tuple
 
+import base64
+
 import cv2
+import httpx
 import numpy as np
 
 from app.models.camera import PipelineConfig
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -90,16 +94,100 @@ class InferenceEngine:
         self._trails = TrailTracker(max_len=40)
         self._current_model_key: Optional[str] = None
         self._current_model = None
+        if device == "mps":
+            try:
+                import torch
+                torch.mps.set_per_process_memory_fraction(0.85)
+            except Exception:
+                pass
 
     # ── Model management ──────────────────────────────────────────────────────
 
+    def _effective_model(self, pipeline: PipelineConfig) -> str:
+        """Build the full model filename from size + active features."""
+        import re
+        # Strip any variant suffix and .pt extension to get the bare size name
+        # e.g. "yolo26m-seg.pt" → "yolo26m", "yolo26n.pt" → "yolo26n", "yolo26n" → "yolo26n"
+        base = re.sub(r'-(pose|seg|obb|cls)(\.pt)?$', '', pipeline.model)
+        base = re.sub(r'\.pt$', '', base)
+        f = pipeline.features
+        if f.keypoints:
+            return f"{base}-pose.pt"
+        if f.masks or f.semantic:
+            return f"{base}-seg.pt"
+        if f.obb:
+            return f"{base}-obb.pt"
+        return f"{base}.pt"
+
     def _get_model(self, pipeline: PipelineConfig):
-        """Return the correct model, reloading if the config changed."""
-        key = f"{pipeline.model}@{self._device}"
+        """Return the correct model for the active features, reloading on change."""
+        model_name = self._effective_model(pipeline)
+        key = f"{model_name}@{self._device}"
         if key != self._current_model_key:
-            self._current_model = _load_model(pipeline.model, self._device)
+            if self._current_model_key and self._current_model_key in _model_cache:
+                del _model_cache[self._current_model_key]
+            self._current_model = None
+            try:
+                import torch
+                if self._device == "mps":
+                    torch.mps.empty_cache()
+                elif self._device.startswith("cuda"):
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            self._current_model = _load_model(model_name, self._device)
             self._current_model_key = key
         return self._current_model
+
+    def get_trails(self, width: int, height: int) -> Dict[int, list]:
+        """Return current trail positions normalised to 0-1."""
+        return {
+            tid: [[round(x / width, 4), round(y / height, 4)] for x, y in pts]
+            for tid, pts in self._trails._trails.items()
+        }
+
+    # ── Remote inference (host Metal/MPS sidecar) ─────────────────────────────
+
+    def _remote_infer(
+        self,
+        frame: np.ndarray,
+        pipeline: PipelineConfig,
+        cam_id: str = "default",
+    ) -> Tuple[np.ndarray, None, Dict[str, Any]]:
+        """Send frame to host inference server and return results."""
+        url = settings.remote_inference_url.rstrip("/") + "/infer"
+        _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        frame_b64 = base64.b64encode(buf).decode()
+        payload = {
+            "frame_b64": frame_b64,
+            "model": pipeline.model,
+            "conf": 0.1,
+            "iou": 0.7,
+            "imgsz": settings.ai_image_size,
+            "features": pipeline.features.model_dump(),
+            "tracking_enabled": pipeline.tracking.enabled,
+            "tracker": pipeline.tracking.tracker,
+            "cam_id": cam_id,
+        }
+        resp = httpx.post(url, json=payload, timeout=120.0)  # 120s covers download + JIT warmup
+        data = resp.json()
+        # Update local trail tracker from returned detections (track_ids + centres)
+        if pipeline.features.trails:
+            h, w = frame.shape[:2]
+            for det in data.get("detections", []):
+                if det.get("track_id") is not None:
+                    cx = int(((det["x1"] + det["x2"]) / 2) * w)
+                    cy = int(((det["y1"] + det["y2"]) / 2) * h)
+                    self._trails.update(det["track_id"], cx, cy)
+        tele: Dict[str, Any] = {
+            "inference_ms": data.get("inference_ms", 0),
+            "counts": data.get("counts", {}),
+            "detections": data.get("detections", []),
+        }
+        # If host server returned trails use those; otherwise local tracker
+        if data.get("trails"):
+            tele["remote_trails"] = data["trails"]
+        return frame.copy(), None, tele
 
     # ── Main inference call ───────────────────────────────────────────────────
 
@@ -107,6 +195,8 @@ class InferenceEngine:
         self,
         frame: np.ndarray,
         pipeline: PipelineConfig,
+        render: bool = False,
+        cam_id: str = "default",
     ) -> Tuple[np.ndarray, Any, Dict[str, Any]]:
         """
         Run inference on a single BGR frame.
@@ -116,6 +206,12 @@ class InferenceEngine:
             results: raw ultralytics Results (or None)
             telemetry: dict with inference_ms, counts, etc.
         """
+        if settings.remote_inference_url:
+            try:
+                return self._remote_infer(frame, pipeline, cam_id=cam_id)
+            except Exception as e:
+                logger.warning(f"Remote inference failed ({e}), falling back to local CPU")
+
         t0 = time.perf_counter()
         annotated = frame.copy()
         results = None
@@ -138,8 +234,14 @@ class InferenceEngine:
 
         # Render overlays based on feature flags
         if results is not None:
-            annotated = self._render(annotated, results, pipeline)
+            if render:
+                annotated = self._render(annotated, results, pipeline)
             telemetry["counts"] = self._count_classes(results)
+            telemetry["detections"] = self._extract_detections(
+                results,
+                frame.shape[1],
+                frame.shape[0],
+            )
 
         t1 = time.perf_counter()
         telemetry["inference_ms"] = round((t1 - t0) * 1000, 1)
@@ -152,13 +254,30 @@ class InferenceEngine:
         Choose between track() and predict() based on pipeline config.
         Returns first Result object or None.
         """
-        task = pipeline.task
-        conf = pipeline.thresholds.confidence
-        iou = pipeline.thresholds.iou
+        f = pipeline.features
+        if f.keypoints:
+            task = "pose"
+        elif f.masks or f.semantic:
+            task = "segment"
+        elif f.obb:
+            task = "obb"
+        else:
+            task = pipeline.task
         verbose = False
 
-        # Set open-vocab classes if prompt is provided
-        kwargs: Dict[str, Any] = dict(conf=conf, iou=iou, verbose=verbose)
+        # conf/iou are fixed permissive minimums; the frontend filters for display
+        # imgsz matches the frame exactly (nearest multiple of 32) — no downscaling
+        h, w = frame.shape[:2]
+        native_imgsz = (max(h, w) + 31) // 32 * 32
+        kwargs: Dict[str, Any] = dict(
+            conf=0.1,
+            iou=0.7,
+            verbose=verbose,
+            imgsz=native_imgsz,
+            rect=True,
+            device=self._device,
+            half=self._device in ("mps", "cuda") or self._device.startswith("cuda:"),
+        )
 
         if pipeline.open_vocab_prompt:
             try:
@@ -166,16 +285,18 @@ class InferenceEngine:
             except AttributeError:
                 pass  # Not a YOLO-World model
 
-        if pipeline.tracking.enabled:
-            tracker_cfg = f"{pipeline.tracking.tracker}.yaml"
-            result_list = model.track(
-                frame,
-                persist=True,
-                tracker=tracker_cfg,
-                **kwargs,
-            )
-        else:
-            result_list = model.predict(frame, **kwargs)
+        import torch
+        with torch.inference_mode():
+            if pipeline.tracking.enabled:
+                tracker_cfg = f"{pipeline.tracking.tracker}.yaml"
+                result_list = model.track(
+                    frame,
+                    persist=True,
+                    tracker=tracker_cfg,
+                    **kwargs,
+                )
+            else:
+                result_list = model.predict(frame, **kwargs)
 
         return result_list[0] if result_list else None
 
@@ -391,3 +512,92 @@ class InferenceEngine:
         except Exception:
             pass
         return counts
+
+    @staticmethod
+    def _extract_detections(results, width: int, height: int) -> list[Dict[str, Any]]:
+        """Return compact normalized boxes + keypoints + mask polygons for browser-side rendering."""
+        detections: list[Dict[str, Any]] = []
+        try:
+            boxes = results.boxes
+            if boxes is None:
+                return detections
+
+            # Pre-extract keypoints tensor if present
+            kp_data = None
+            try:
+                if hasattr(results, 'keypoints') and results.keypoints is not None:
+                    kp_data = results.keypoints.data
+            except Exception:
+                pass
+
+            # Pre-extract normalized mask polygons if present
+            mask_polygons: list[Any] = []
+            try:
+                if hasattr(results, 'masks') and results.masks is not None:
+                    # xyn is already normalized (0-1); xy needs dividing by frame dims
+                    if hasattr(results.masks, 'xyn') and results.masks.xyn is not None:
+                        mask_polygons = list(results.masks.xyn)
+                    elif hasattr(results.masks, 'xy') and results.masks.xy is not None:
+                        # Fallback: normalize pixel-space contours manually
+                        mask_polygons = [
+                            poly / np.array([width, height], dtype=np.float32)
+                            for poly in results.masks.xy
+                        ]
+            except Exception as e:
+                logger.debug(f"Mask polygon extraction error: {e}")
+
+            for index, box in enumerate(boxes):
+                x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
+                class_id = int(box.cls[0])
+                track_id = None
+                if boxes.id is not None:
+                    try:
+                        track_id = int(boxes.id[index])
+                    except (TypeError, ValueError, IndexError):
+                        pass
+
+                # Normalised keypoints: [[x, y, conf], ...]
+                keypoints = None
+                if kp_data is not None and index < len(kp_data):
+                    try:
+                        kp = kp_data[index].cpu().numpy()
+                        keypoints = [
+                            [
+                                round(max(0.0, min(1.0, float(pt[0]) / width)), 4),
+                                round(max(0.0, min(1.0, float(pt[1]) / height)), 4),
+                                round(float(pt[2]), 3),
+                            ]
+                            for pt in kp
+                        ]
+                    except Exception:
+                        pass
+
+                # Normalised mask polygon: [[x, y], ...] already in 0-1 space
+                segments = None
+                if mask_polygons and index < len(mask_polygons):
+                    try:
+                        poly = mask_polygons[index]  # np array (N, 2)
+                        # Downsample dense polygons to keep payload small (max 80 pts)
+                        step = max(1, len(poly) // 80)
+                        segments = [
+                            [round(float(pt[0]), 4), round(float(pt[1]), 4)]
+                            for pt in poly[::step]
+                        ]
+                    except Exception:
+                        pass
+
+                detections.append({
+                    "x1": max(0.0, min(1.0, x1 / width)),
+                    "y1": max(0.0, min(1.0, y1 / height)),
+                    "x2": max(0.0, min(1.0, x2 / width)),
+                    "y2": max(0.0, min(1.0, y2 / height)),
+                    "class_id": class_id,
+                    "label": results.names.get(class_id, str(class_id)),
+                    "confidence": round(float(box.conf[0]), 4),
+                    "track_id": track_id,
+                    "keypoints": keypoints,
+                    "segments": segments,
+                })
+        except (AttributeError, TypeError, ValueError):
+            pass
+        return detections

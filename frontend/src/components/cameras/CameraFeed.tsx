@@ -1,11 +1,13 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { AlertTriangle, RefreshCw, Wifi, WifiOff } from 'lucide-react'
 import { useStore } from '@/store/useStore'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { getStreamUrl } from '@/lib/api'
 import { WebRTCFeed } from './WebRTCFeed'
+import { OverlayCanvas } from './OverlayCanvas'
 import type { Camera } from '@/types'
+import type { OverlayData } from './OverlayCanvas'
 
 interface CameraFeedProps {
   camera: Camera
@@ -16,7 +18,7 @@ interface CameraFeedProps {
 }
 
 export function CameraFeed({ camera, onSelect, onDoubleClick, isSelected, isSpotlight }: CameraFeedProps) {
-  const { telemetry, backendUrl, updateCamera } = useStore()
+  const { telemetry, backendUrl, updateCamera, classFilters } = useStore()
   const camTelemetry = telemetry[camera.id]
   const [imgError, setImgError] = useState(false)
   const [imgLoaded, setImgLoaded] = useState(false)
@@ -24,6 +26,32 @@ export function CameraFeed({ camera, onSelect, onDoubleClick, isSelected, isSpot
   const [useFallback, setUseFallback] = useState(false)
   const [streamVersion, setStreamVersion] = useState(0)
   const [webRtcVersion, setWebRtcVersion] = useState(0)
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null)
+  const overlayDataRef = useRef<OverlayData>({
+    detections: [], trails: undefined,
+    showBoxes: false, showLabels: false,
+    showKeypoints: false, showSegments: false, showTrails: false,
+  })
+
+  // Keep overlay data in a ref so canvas reads latest without React re-renders
+  useEffect(() => {
+    const activeFilter = classFilters?.[camera.id] ?? []
+    const confThreshold = camera.pipeline.thresholds.confidence
+    const rawDets = camTelemetry?.detections ?? []
+    overlayDataRef.current = {
+      detections: rawDets.filter((d) => {
+        if (d.confidence < confThreshold) return false
+        if (activeFilter.length > 0 && !activeFilter.includes(d.label.toLowerCase())) return false
+        return true
+      }),
+      trails: camTelemetry?.trails,
+      showBoxes: camera.pipeline.features.boxes || camera.pipeline.features.obb,
+      showLabels: camera.pipeline.features.labels,
+      showKeypoints: camera.pipeline.features.keypoints,
+      showSegments: camera.pipeline.features.masks || camera.pipeline.features.semantic,
+      showTrails: camera.pipeline.features.trails,
+    }
+  })
 
   const streamUrl = `${getStreamUrl(camera.id, backendUrl)}?v=${streamVersion}`
   const isLive = camera.status === 'live'
@@ -91,6 +119,7 @@ export function CameraFeed({ camera, onSelect, onDoubleClick, isSelected, isSpot
           retryToken={webRtcVersion}
           onPlaying={handleWebRtcPlaying}
           onUnavailable={handleWebRtcUnavailable}
+          onVideoEl={setVideoEl}
         />
       )}
 
@@ -104,6 +133,11 @@ export function CameraFeed({ camera, onSelect, onDoubleClick, isSelected, isSpot
           onError={() => setImgError(true)}
           draggable={false}
         />
+      )}
+
+      {/* Canvas overlay — synced to video frames via requestVideoFrameCallback */}
+      {isLive && camTelemetry?.ai_enabled && videoEl && (
+        <OverlayCanvas videoEl={videoEl} dataRef={overlayDataRef} />
       )}
 
       {/* Connecting overlay */}
@@ -168,11 +202,13 @@ export function CameraFeed({ camera, onSelect, onDoubleClick, isSelected, isSpot
         {camTelemetry && (
           <div className="flex gap-1">
             <Badge variant="secondary" className="text-[10px] h-5 px-1.5 font-mono">
-              {camTelemetry.fps.toFixed(1)} fps
+              {(camTelemetry.video_fps ?? camTelemetry.fps).toFixed(1)} video
             </Badge>
-            <Badge variant="outline" className="text-[10px] h-5 px-1.5 font-mono bg-black/60">
-              {Math.round(camTelemetry.inference_ms)}ms
-            </Badge>
+            {camTelemetry.ai_enabled && (
+              <Badge variant="outline" className="text-[10px] h-5 px-1.5 font-mono bg-black/60">
+                {(camTelemetry.ai_fps ?? 0).toFixed(1)} AI · {Math.round(camTelemetry.inference_ms)}ms
+              </Badge>
+            )}
           </div>
         )}
       </div>
