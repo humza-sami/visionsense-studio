@@ -1,0 +1,16 @@
+{
+  "_comment": "Per-camera zones. Polygons are [x,y] pixel points in the camera's frame. Used to (a) filter detections for logic and (b) optionally crop before inference.",
+  "frame_size": [1920, 1080],
+  "zones": [
+    {
+      "name": "exit",
+      "type": "exit",
+      "polygon": [[1500, 200], [1900, 200], [1900, 1000], [1500, 1000]]
+    },
+    {
+      "name": "counter",
+      "type": "interest",
+      "polygon": [[200, 300], [900, 300], [900, 950], [200, 950]]
+    }
+  ]
+}

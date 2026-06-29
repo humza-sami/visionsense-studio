@@ -1,0 +1,39 @@
+# Global tunables. Everything sized for an 8 GB GPU running ~15 cameras.
+# On macOS dev these still apply; device falls back to mps/cpu automatically.
+
+model:
+  # Dev (macOS / no CUDA): the .pt is loaded (CPU or Apple MPS).
+  # Prod (Ubuntu / CUDA):  if the .engine exists it is preferred automatically.
+  weights: models/yolo26n.pt
+  engine: models/yolo26n.engine
+  imgsz: 640            # keep 640 across 15 cams on 8 GB; drop to 512 if tight
+  conf: 0.35
+  iou: 0.45
+  max_batch: 15         # = number of cameras
+  device: auto          # auto | cpu | mps | cuda:0
+  # COCO class filter: person, backpack, handbag, suitcase, laptop, cell phone.
+  # Set to null to keep all classes.
+  classes: [0, 24, 26, 28, 63, 67]
+
+pipeline:
+  default_det_interval: 3   # run YOLO every Nth frame; tracker fills the gaps
+  loop_target_fps: 30       # orchestrator pacing cap
+  motion_min_area: 500      # px of motion (on 320x180) to count a frame "active"
+
+capture:
+  backend: auto             # auto | opencv | gstreamer | pynvc
+  rtsp_transport: tcp       # tcp is more reliable for RTSP over flaky links
+  reconnect_backoff_s: 2
+  read_fail_limit: 30       # consecutive read failures before reconnect
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  jpeg_quality: 70          # MJPEG preview quality
+  preview_max_fps: 15
+
+redis:
+  enabled: false            # true on the server if you run a redis container
+  host: localhost
+  port: 6379
+  stream: cctv:events

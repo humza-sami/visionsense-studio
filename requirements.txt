@@ -1,0 +1,17 @@
+# ── Core (cross-platform: works on macOS dev and Ubuntu prod) ────────────────
+ultralytics>=8.3.0        # YOLO + export + built-in trackers
+supervision>=0.21.0       # per-camera ByteTrack + detection helpers
+opencv-python>=4.9.0      # capture + drawing (see README: GStreamer note for prod)
+numpy>=1.26
+pyyaml>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+redis>=5.0                # optional; pipeline falls back to in-memory if unavailable
+
+# ── Linux / NVIDIA only — DO NOT install on macOS. Install on the Ubuntu box. ─
+#   pip install pynvml                 # GPU/VRAM telemetry  (auto-skipped on mac)
+#   pip install tensorrt              # FP16 engine inference (match your CUDA)
+#   pip install onnx onnxruntime-gpu  # export intermediate
+#   pip install PyNvVideoCodec        # NVDEC zero-copy decode (recommended prod path)
+pynvml>=11.5 ; platform_system == "Linux"

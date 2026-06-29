@@ -1,0 +1,32 @@
+# 15-camera config. For macOS dev, cam01 uses the built-in webcam (url: 0) so you
+# can run the whole pipeline locally. The RTSP cameras are disabled until you are
+# on the server — flip `enabled: true` and set real substream URLs there.
+
+cameras:
+  # ── Local dev camera (webcam). Works on macOS today. ──────────────────────
+  - id: cam01
+    url: 0                  # webcam index; or a file path / rtsp url
+    det_interval: 3
+    motion_gate: false      # webcam is usually active; gating not useful here
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  # ── Production cameras (Ubuntu). Use the SUBSTREAM for AI, not the 4K main. ─
+  - id: cam02
+    url: "rtsp://user:pass@192.168.1.12:554/substream"
+    det_interval: 2         # busy/theft zone → detect often
+    motion_gate: false      # never gate a theft zone
+    logic: [theft, headcount]
+    zones_file: config/zones/cam02.json
+    enabled: false
+
+  - id: cam03
+    url: "rtsp://user:pass@192.168.1.13:554/substream"
+    det_interval: 5         # quiet desk → detect rarely
+    motion_gate: true
+    logic: [desk_activity, headcount]
+    zones_file: null
+    enabled: false
+
+  # cam04 .. cam15: copy a block above, bump the id/url, set per-zone options.

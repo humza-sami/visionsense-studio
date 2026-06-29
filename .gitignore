@@ -30,6 +30,9 @@ frontend/.vite/
 *.swo
 .DS_Store
 
+# Env
+.env
+
 # Docker
 .dockerignore
 
