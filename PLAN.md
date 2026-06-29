@@ -1,300 +1,586 @@
-# VisionSense Studio — Build Plan & Architecture
+# Multi-Camera CCTV Detection Backend — Full Build Plan
 
-A live-demo platform for pitching AI-on-CCTV to clients. The user supplies an RTSP/webcam/USB feed; the system applies Ultralytics YOLO models in real time and visualizes the result so a prospect can see what their "real product" would look like.
-
-This document is written to be handed directly to an AI coding agent. It defines the architecture, the data model, the screen flow, and an ordered build roadmap that de-risks the hardest unknowns first.
-
----
-
-## 1. The architecture reality (read this first)
-
-React + shadcn is the **face** of the product. It cannot do the actual work, because:
-
-- **Browsers cannot consume RTSP.** There is no native RTSP support in any browser.
-- **Browsers cannot run Ultralytics YOLO.** Inference (especially multi-stream) needs Python + a GPU.
-
-So VisionSense Studio is a **two-process system**: a Python backend that ingests cameras and runs YOLO, and a React frontend that controls it and displays annotated video. They communicate over HTTP (video) and WebSocket (telemetry/events).
-
-```
-                          VisionSense Studio
- ┌──────────────────────────────────────────────────────────────────────┐
- │                                                                        │
- │   ┌───────────────────────┐         ┌──────────────────────────────┐  │
- │   │   FRONTEND (React)    │  HTTP   │      BACKEND (Python)        │   │
- │   │  Vite + shadcn/ui     │◄───────►│       FastAPI (async)        │   │
- │   │                       │   WS    │                              │   │
- │   │  • Splash / Setup     │         │  ┌────────────────────────┐  │   │
- │   │  • Camera grid        │         │  │   Camera Manager       │  │   │
- │   │  • Left sidebar:      │         │  │  (one worker / camera) │  │   │
- │   │    telemetry+controls │         │  └───────────┬────────────┘  │   │
- │   │  • Right sidebar:     │         │              │ frames        │   │
- │   │    Apps + Features    │         │  ┌───────────▼────────────┐  │   │
- │   └───────────┬───────────┘         │  │   Inference Engine     │  │   │
- │               │                     │  │  Ultralytics YOLO      │  │   │
- │   annotated   │  MJPEG / WS         │  │  detect/seg/pose/obb/  │  │   │
- │   video  ◄────┘                     │  │  cls/sem + track       │  │   │
- │                                     │  └───────────┬────────────┘  │   │
- │                                     │              │ results       │   │
- │                                     │  ┌───────────▼────────────┐  │   │
- │                                     │  │   Solutions Layer      │  │   │
- │                                     │  │  counting, in/out,     │  │   │
- │                                     │  │  heatmap, ROI, PPE...  │  │   │
- │                                     │  └────────────────────────┘  │   │
- │                                     │              ▲               │   │
- │                                     └──────────────┼───────────────┘   │
- │                                                    │ RTSP / USB / V4L2 │
- └────────────────────────────────────────────────────┼──────────────────┘
-                                                       │
-                                            ┌──────────▼──────────┐
-                                            │  IP Cameras / NVR   │
-                                            │  Webcam / USB cam   │
-                                            └─────────────────────┘
-```
-
-**Packaging for demos:** build it as a web app (FastAPI serves the compiled React SPA), then optionally wrap it in **Tauri** (lightweight) or **Electron** for the polished "double-click → our logo → app" desktop experience you described. Start web-first; add the desktop wrapper in a later phase so it doesn't slow the core build.
+**Target hardware:** Ubuntu 24.04 · RTX 3070 Ti (8 GB VRAM) · 16 GB RAM · 15 RTSP cameras · YOLO26
+**Audience:** Python developer building the production backend from scratch.
 
 ---
 
-## 2. Recommended stack
+## 0. Read this first — your hardware reality check
 
-| Layer | Choice | Why |
+Everything below is sized for **your exact box**. Do not skip this section; it decides every later choice.
+
+### What your parts actually are
+
+| Part | Spec | What it means for you |
 |---|---|---|
-| Frontend framework | React + Vite | Fast, your stated preference |
-| UI components | shadcn/ui + Tailwind | Your provided theme drops straight in |
-| Frontend state | Zustand | Lightweight; good for "active camera / active apps" state |
-| Data fetching | TanStack Query | Camera lists, config, status polling |
-| Live data channel | Native WebSocket client | Detections, counts, alerts, FPS |
-| Backend | FastAPI (async) | First-class WebSockets, great for ML serving |
-| Inference | Ultralytics (`ultralytics` pip pkg) | All YOLO tasks + ready-made solutions |
-| Capture/decode | OpenCV (`cv2.VideoCapture`) + FFmpeg | RTSP, USB, V4L2 |
-| Camera discovery | `onvif-zeep` + WS-Discovery | Auto-enumerate channels/streams |
-| Annotated video transport | **MJPEG** (multipart/x-mixed-replace) for v1 | Simplest path that "looks like the real product"; WebRTC is the future upgrade |
-| GPU | NVIDIA + CUDA (or CPU fallback with `yolo26n`) | Demo laptops should ship with a GPU if possible |
-| Desktop wrapper (later) | Tauri or Electron | Native splash + offline demo build |
+| GPU | RTX 3070 Ti, Ampere (GA104) | Has **3rd-gen tensor cores** → full **FP16 and INT8** acceleration. Good. This is *not* a GTX; the FP16 speedup is real. |
+| VRAM | **8 GB** | **This is your hard limit.** Holds the model engine + activations + decoded frames + CUDA context. Everything in the plan is designed to fit here. |
+| NVDEC | 1× 5th-gen decoder | The dedicated video-decode chip. One Ampere NVDEC handles **~20+ 1080p30 H.264 streams**, so 15 cameras decode fine on the GPU — *if* you actually use NVDEC and not the CPU. |
+| System RAM | 16 GB | Tight but workable. Run the server **headless (no desktop GUI)** and keep CPU-side frame buffers tiny. |
+| CPU | (yours) | Used only for orchestration, business logic, networking, Redis. **Never** for video decode in production. |
 
-**Model lineup (from the current Ultralytics release, YOLO26):** sizes `n/s/m/l/x` across `detect / segment / pose / obb / classify` plus `semantic` (Cityscapes) and `cls` (ImageNet). For demos, default to **`yolo26n` / `yolo26s`** — speed matters more than peak accuracy when a prospect is watching latency.
+### The honest capacity verdict
 
----
+You **can** run all 15 cameras on this single 3070 Ti. You **cannot** run 15 cameras at 30 FPS, every-frame, full-frame, 1280px detection — that will not fit in 8 GB and will not keep real-time. The achievable design target is:
 
-## 3. Camera ingestion & the channel auto-load question
+> **15 cameras × ~8–12 FPS detection each, at 640px, YOLO26n/s FP16, with cross-camera batching + detect-every-3rd-frame + ByteTrack + motion gating.**
 
-Your two example URLs are classic Dahua/Hikvision NVR patterns:
+That is more than enough for person / phone / bag / head-count / desk-activity / theft logic, because those events do not need 30 detections per second.
 
-```
-rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=1&subtype=0
-rtsp://admin:552050gmb@172.20.17.40:554/cam/realmonitor?channel=16&subtype=0
-```
+### VRAM budget (why 8 GB is enough if you behave)
 
-- `channel=N` → which camera on the NVR
-- `subtype=0` → **main stream** (high-res, heavy)
-- `subtype=1` → **sub stream** (low-res, light) ← use this for multi-camera grids
-- `%40` in the password is URL-encoded `@` — handle encoding/decoding carefully in the setup form
+| Consumer | Approx VRAM |
+|---|---|
+| CUDA context (headless) | ~0.4–0.6 GB |
+| TensorRT YOLO26**n** engine + workspace (batch 15, 640, FP16) | ~1.0–1.8 GB |
+| YOLO26**s** instead (if you need accuracy) | ~1.8–2.8 GB |
+| NVDEC decoded surfaces (15 cams × few buffers, NV12 ~3 MB) | ~0.2–0.4 GB |
+| Preprocessed batch tensor (15×3×640×640 FP16 = 37 MB) | negligible |
+| **Safety headroom (keep free!)** | **~1.5–2 GB** |
 
-**Yes, you can load all cameras automatically.** Three approaches, in order of robustness:
-
-**A. ONVIF discovery (best, do this in a later phase).** Most NVRs/IP cameras support ONVIF. WS-Discovery scans the subnet and finds devices automatically; the ONVIF Media service then returns exact stream URIs, resolutions, and channel counts. No guessing.
-
-**B. Channel-template probing (pragmatic, matches your URLs — build this first).** In setup, the user provides a base URL with a `{channel}` token plus a range:
-
-```
-Template: rtsp://admin:pass@172.20.17.40:554/cam/realmonitor?channel={channel}&subtype=1
-Range:    1 – 16
-```
-
-The backend opens each channel in parallel (e.g. `ThreadPoolExecutor`) with a 2–3 second connection timeout, keeps the channels that connect, and discards dead ones. The survivors become the camera grid — no manual one-by-one entry. Use `subtype=1` for the grid to conserve bandwidth and GPU.
-
-**C. Vendor HTTP API (optional).** Dahua CGI / Hikvision ISAPI can report the exact channel count if you want to skip probing a fixed range.
-
-**Setup wizard must support three input modes:**
-1. **RTSP** — single URL, or template + range (method B above)
-2. **Webcam** — browser `getUserMedia` for the local cam, *or* backend `VideoCapture(0)` (prefer backend so it goes through the same pipeline)
-3. **USB / V4L2** — backend enumerates `/dev/video*` (Linux) or DirectShow devices (Windows)
-
-All three normalize to the same internal `Camera` object so the rest of the system doesn't care about the source.
+**Rules this forces on you:**
+- Use **YOLO26n** first; move to **YOLO26s** only if accuracy demands it. Do **not** use m/l/x on 8 GB with 15 cams.
+- One single model engine for all cameras. **Never load 15 model copies** — that is the #1 way people crash an 8 GB card.
+- Stick to **imgsz=640** (drop to 512 if VRAM/throughput gets tight). Never 1280 across 15 streams here.
+- Pull the camera **sub-stream** (usually 1080p or lower) for the AI. Use the main/4K stream only if you also record. 4K decode + inference across 15 cams will not fit.
 
 ---
 
-## 4. The core concept: Features vs Applications
+## 1. Architecture
 
-This is the heart of the product, so make the abstraction clean. There are two layers, and they map almost exactly onto Ultralytics' own structure (`tasks/` and `solutions/`).
+A decoupled producer–consumer pipeline. Each stage is a separate worker so the GPU and CPU stay busy at the same time instead of taking turns.
 
-### Features = primitives (the raw YOLO output)
+```
+ 15× RTSP cameras
+        │
+        ▼
+ (1) CAPTURE+DECODE   ── one worker per camera, NVDEC on GPU
+        │              frame decoded → stays in GPU memory
+        ▼
+ (2) LATEST-FRAME BUFFER  ── size 1 per camera, DROP old frames
+        │
+        ▼
+ (3) MOTION GATE      ── cheap bg-subtraction; static frame? skip inference
+        │ (only active frames pass)
+        ▼
+ (4) BATCH BUILDER    ── grab 1 frame from each active camera (short timeout)
+        │              → one tensor [B,3,640,640]
+        ▼
+ (5) INFERENCE        ── ONE TensorRT FP16 YOLO26 engine, dynamic batch
+        │              run only every Nth frame per camera
+        ▼
+ (6) TRACKER (per cam) ── ByteTrack fills frames between detections, gives IDs
+        │
+        ▼
+ (7) BUSINESS LOGIC   ── theft / headcount / desk-activity, per camera + zones
+        │
+        ▼
+ (8) EVENTS → Redis/MQTT → alerts / dashboard / DB
+        │
+        ▼
+ (9) MONITORING       ── per-cam FPS, latency, queue depth, GPU/VRAM/CPU/RAM, drops
+```
 
-These answer "**what does the model see?**" They are toggleable overlay layers on a camera:
+### Why this layout (given Python's GIL)
+- **Decode workers** spend their time inside NVDEC / native code, which releases the GIL — so threads work here.
+- **Inference** is one native TensorRT call on a batch — also releases the GIL.
+- The **batch builder + inference loop** runs in one place (a single GPU consumer) so you never fight over the GPU.
+- **Business logic** is pure Python; if it gets heavy, push it to separate **processes** (multiprocessing) so it doesn't stall the GPU loop.
 
-| Feature | Ultralytics task | What it shows |
+---
+
+## 2. Tech stack decision (for your box specifically)
+
+| Concern | Choice | Why / alternative |
 |---|---|---|
-| Detect | detect | Bounding boxes + labels |
-| Segment | segment | Instance masks |
-| Classify | classify | Frame-level class label |
-| Pose | pose | Skeleton keypoints |
-| OBB | obb | Oriented (rotated) boxes |
-| Semantic | semantic | Per-pixel scene segmentation |
-| Track | track (ByteTrack/BoT-SORT) | Persistent IDs + motion trails |
-
-Track is special — it's a modifier that sits on top of detect/segment/pose and gives every object a stable ID across frames. It's the foundation for any counting/duration application.
-
-### Applications = solutions (business logic built on primitives)
-
-These answer "**what business question does this solve?**" Each is a primitive + logic + configuration (ROI zones, counting lines, timers). Crucially, **most already exist in `ultralytics/solutions/` — wrap them, don't reimplement.**
-
-| Your Application | Built from | Ultralytics solution to wrap | Notes |
-|---|---|---|---|
-| Head count | Detect(person) + count-in-frame | `object_counter` / `region_counter` | Easiest. Great first app. |
-| Customer In/Out | Detect(person) + Track + line crossing | `object_counter` (line mode) | Needs tracking. The classic CCTV demo. |
-| Manager presence in seat | Detect(person) inside a seat polygon + presence timer | `region_counter` + custom timer | User draws the seat ROI in the UI. |
-| Manager mobile-usage duration | Detect(person + cell phone) co-occurrence, or pose (hand-near-head) + duration timer | custom (no direct solution) | **Hardest — see §6.** Phone is small and often occluded. |
-| Safety equipment / PPE | Detect(helmet/vest) per person + compliance check | custom + PPE model or open-vocab | **Needs the right model — see §5.** |
-
-**Free wins to show off** (already shipped as solutions — toggle them on to impress):
-`heatmap` (foot-traffic heatmap), `speed_estimation` (vehicle speed), `security_alarm` (intrusion in a zone → alert), `queue_management`, `parking_management`, `distance_calculation`, `trackzone`, `vision_eye`, `analytics` (live charts), and **`object_blurrer`** (face/person blur — directly relevant to Pakistani privacy concerns and a strong trust signal in a pitch).
-
-The right sidebar, then, has two groups: **Features** (per-camera overlay toggles) and **Applications** (per-camera logic toggles). Activating an Application auto-enables the Features it depends on (e.g. Customer In/Out auto-turns-on Detect + Track).
+| Video decode | **GStreamer + NVIDIA NVDEC**, or **PyNvVideoCodec** | Gets decode off the CPU. PyNvVideoCodec is pip-installable and decodes straight to a GPU tensor (zero-copy). GStreamer is great but desktop element names are fiddly (see §5.3). |
+| Inference engine | **TensorRT FP16**, YOLO26 | 2–5× over PyTorch; FP16 uses your tensor cores. This is the single biggest win. |
+| Model loader | **Ultralytics loads the `.engine`** for speed of development | Lets you call batched inference + tracking with minimal code. Drop to the raw TensorRT API later only if you need more control. |
+| Tracker | **ByteTrack** | Fastest mainstream tracker, no ReID network. Use BoT-SORT only if you must re-identify a person across cameras. |
+| Motion gate | **OpenCV MOG2 / frame-diff** | Pure CPU, dirt cheap, runs before the GPU. |
+| Events/alerts | **Redis** (pub/sub or streams) | Lightweight, on-prem, simple. MQTT if cameras/devices already speak it. Kafka is overkill. |
+| Packaging | **Docker with `--gpus all`** | Reproducible on-prem deploy. |
+| **Skip for now** | DeepStream, Triton, Kubernetes | DeepStream = phase 3 (max density, steep curve). Triton = pointless for one local GPU. K8s = pointless on one on-prem box. |
 
 ---
 
-## 5. Model strategy & the PPE caveat (important for demo credibility)
+## 3. Project structure
 
-COCO-pretrained YOLO knows **80 classes** — including `person`, `cell phone`, `car`, `truck`, `backpack`, etc. It does **not** know `hardhat`, `safety vest`, `fire`, `smoke`, `forklift`, or a license plate. If a client asks for PPE detection and you point a COCO model at workers, it will detect the people but not the helmets — an awkward moment in a live pitch.
-
-Three ways to handle arbitrary client requests:
-
-1. **Open-vocabulary models (the strategic unlock).** **YOLOE** and **YOLO-World** detect classes from a *text prompt* with zero training. At the meeting, the user types the target — `"hardhat"`, `"safety vest"`, `"forklift"`, `"fire extinguisher"` — and the model detects it live. This directly solves "we can't build all apps beforehand." Make a prompt box a first-class UI element.
-
-2. **Pre-finetuned client-ready models.** Keep a small swappable library for the common high-value asks: PPE (the repo already ships a `construction-ppe` dataset, so a PPE-trained YOLO is straightforward to produce), fire/smoke, ANPR/number plates. Load on demand per camera.
-
-3. **COCO models for the fast common cases.** Person counting, vehicle counting, phone detection — `yolo26n`/`yolo26s` handle these instantly with no setup.
-
-**Recommended default:** COCO `yolo26s` for speed, with a one-click switch to **YOLOE/YOLO-World** when the client wants something custom. That combination covers ~everything a prospect will throw at you.
-
----
-
-## 6. Honest take on the hard parts
-
-State these expectations to your agent up front so it doesn't over-promise in the build:
-
-- **Multi-stream real-time inference is GPU-heavy.** A demo laptop will *not* run 16 streams at full inference simultaneously. Mitigation (build this in from the start): **selective inference** — run full YOLO only on the *spotlighted/selected* camera and any camera with an active Application; show the rest of the grid as raw or low-FPS thumbnails. Use sub-streams, small models, and frame-skipping (process every Nth frame).
-- **"Manager mobile-usage duration" is the trickiest Application.** Phones are small, often held below the desk or occluded by a hand. A reliable demo-grade version: detect `person` + `cell phone` and flag usage when a phone box overlaps/neighbors a person box, then accumulate duration via tracking. A pose-based variant (wrist keypoint near the head) can supplement it. Be candid that accuracy here is lower than person-counting; frame it as "indicative," not forensic.
-- **MJPEG latency** is ~200–500 ms — perfectly fine for "look how it'll work" demos, but not "production real-time." WebRTC is the upgrade path when you need it.
-- **PPE/custom classes** depend entirely on the model (see §5). Don't let the agent assume COCO covers them.
-
----
-
-## 7. Data model
-
-A clean schema your agent can implement directly. Each camera carries its own pipeline config, so cameras are independent.
-
-```jsonc
-// Camera
-{
-  "id": "cam_01",
-  "name": "Entrance",
-  "source": {
-    "type": "rtsp | webcam | usb",
-    "url": "rtsp://.../channel=1&subtype=1",   // for rtsp
-    "device_index": 0                            // for webcam/usb
-  },
-  "status": "connecting | live | error | stopped",
-  "pipeline": {
-    "model": "yolo26s.pt",                        // or yolo26s-seg.pt, yoloe-..., etc.
-    "task": "detect | segment | pose | obb | classify | semantic",
-    "open_vocab_prompt": ["hardhat", "vest"],     // only for YOLOE/YOLO-World
-    "tracking": { "enabled": true, "tracker": "bytetrack | botsort" },
-    "thresholds": { "confidence": 0.35, "iou": 0.5 },
-    "features": {                                 // overlay toggles (the primitives)
-      "boxes": true, "masks": false, "keypoints": false,
-      "labels": true, "trails": true, "obb": false, "semantic": false
-    },
-    "applications": [                             // the business-logic solutions
-      {
-        "type": "customer_in_out",
-        "config": { "line": [[x1,y1],[x2,y2]] }
-      },
-      {
-        "type": "manager_presence",
-        "config": { "zone": [[x,y],[x,y],[x,y],[x,y]] }
-      }
-    ],
-    "inference_mode": "full | spotlight_only | every_nth_frame",
-    "frame_skip": 2
-  }
-}
 ```
-
-```jsonc
-// Live telemetry pushed over WebSocket (per camera, ~1–5 Hz)
-{
-  "cam_id": "cam_01",
-  "fps": 24.3,
-  "inference_ms": 18,
-  "counts": { "person": 7 },
-  "application_outputs": {
-    "customer_in_out": { "in": 142, "out": 138, "current": 4 },
-    "manager_presence": { "present": true, "duration_s": 1830 }
-  },
-  "alerts": [
-    { "type": "ppe_violation", "ts": 1719230000, "detail": "no helmet" }
-  ]
-}
+cctv-backend/
+├── docker/
+│   ├── Dockerfile
+│   └── docker-compose.yml
+├── config/
+│   ├── settings.yaml          # global tunables (imgsz, det_interval, batch, thresholds)
+│   ├── cameras.yaml           # 15 camera URLs + per-camera options
+│   └── zones/                 # per-camera ROI/zone polygons (json)
+├── models/
+│   ├── yolo26n.pt             # training/dev format
+│   ├── yolo26n.onnx           # intermediate
+│   └── yolo26n.engine         # TensorRT — what production runs
+├── src/
+│   ├── capture/
+│   │   ├── rtsp_worker.py      # per-camera decode thread + reconnection
+│   │   └── frame_buffer.py     # latest-frame holder (drop-old)
+│   ├── inference/
+│   │   ├── engine.py           # TensorRT/Ultralytics wrapper
+│   │   ├── batch_builder.py    # gather frames across cameras
+│   │   └── preprocess.py       # letterbox/resize (GPU if possible)
+│   ├── motion/
+│   │   └── motion_gate.py
+│   ├── tracking/
+│   │   └── tracker.py          # ByteTrack per camera
+│   ├── logic/
+│   │   ├── base.py
+│   │   ├── headcount.py
+│   │   ├── desk_activity.py
+│   │   └── theft.py
+│   ├── events/
+│   │   ├── publisher.py        # Redis
+│   │   └── schemas.py
+│   ├── monitoring/
+│   │   └── metrics.py          # pynvml + per-stage timings
+│   ├── pipeline.py             # orchestrator — wires everything
+│   └── main.py
+├── scripts/
+│   ├── export_model.py
+│   └── benchmark.py
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## 8. UI / screen flow
+## 4. Build order (phases)
 
-### Startup sequence
-1. **Splash** — your logo + loading animation while the backend warms up (loads default model, checks GPU).
-2. **Setup or Skip** — a card with two choices.
-3. **Setup wizard** (if chosen) — pick input mode (RTSP / Webcam / USB) → for RTSP, single URL *or* template+range → optional "Auto-detect channels" → preview thumbnails of connected cameras → confirm.
-4. **Skip** → straight to an empty Dashboard with a "+ Add Camera" prompt in the center.
+Build in this order so you always have a *working* system and can benchmark each gain.
 
-### Dashboard layout (three columns)
-
-**Center — live views.** Single spotlight view or an N×N grid of camera feeds (annotated MJPEG `<img>` per camera). Clicking a tile spotlights it (and triggers full inference on it). An overlay drawing tool lets the user draw counting lines and ROI zones directly on a feed — these write into that camera's `pipeline.applications[].config`.
-
-**Left sidebar — system controls & telemetry** (your "important fields"; here's a concrete proposal):
-- Active camera count + per-camera health/status dots
-- Global model selector + confidence/IoU sliders
-- System FPS and inference latency
-- Aggregate counters (total people, total in/out)
-- **Live alerts/events feed** (intrusion, PPE violation, etc.) — scrolling list, very demo-friendly
-- Snapshot / start-recording / export buttons
-- Settings (theme, GPU/CPU, grid size)
-
-**Right sidebar — Applications & Features** (per the selected camera, as you described):
-- **Features** group: toggle switches for Detect, Segment, Classify, Pose, OBB, Semantic, Track
-- **Applications** group: toggle switches for Head Count, Customer In/Out, Manager Presence, Mobile Usage, PPE/Safety, plus the "free win" solutions (Heatmap, Speed, Intrusion Alarm, Privacy Blur…)
-- A **custom-detection prompt box** (text input → YOLOE/YOLO-World) so a client can request "detect X" live
-
-Enabling an Application auto-enables its required Features and surfaces its config controls (e.g. "draw the counting line").
+- **Phase 0 — Environment.** Drivers, CUDA, TensorRT, libraries, headless server.
+- **Phase 1 — Single camera, TensorRT.** Export YOLO26 → engine. One RTSP → NVDEC decode → engine → draw boxes. Prove the fast path works.
+- **Phase 2 — Multi-camera + batching + queues.** All 15 cameras into threaded decoders → latest-frame buffers → one batched inference. This is where the big jump happens.
+- **Phase 3 — Tracking + frame skip.** Detect every Nth frame, ByteTrack between.
+- **Phase 4 — Motion gating + ROI.** Skip static frames; restrict to zones.
+- **Phase 5 — Business logic + events.** Headcount, desk activity, theft rules → Redis.
+- **Phase 6 — Monitoring, Docker, resilience.** Metrics, reconnection, autostart.
 
 ---
 
-## 9. Build roadmap (ordered to de-risk the hardest unknowns first)
+## 5. Component-by-component implementation
 
-**Phase 0 — Prove the pipeline (the critical milestone).**
-Scaffold FastAPI + React(Vite)+shadcn. Build the splash → setup/skip flow. Get **one webcam → backend → YOLO detect → MJPEG → rendered in React** working end to end. *Nothing else matters until this round-trip works.* Acceptance: a person stands in front of the laptop webcam and sees a green box with "person 0.91" in the React UI, latency under ~0.5 s.
+> Code below is skeleton-grade — correct in shape, adapt names/paths. Comments mark the production gotchas.
 
-**Phase 1 — Camera manager + setup wizard.** Single RTSP stream working. Setup wizard for all three input modes (RTSP / Webcam / USB). Normalize to the `Camera` object. Connection status + error handling (bad URL, timeout, wrong credentials).
+### 5.1 Environment setup (Phase 0)
 
-**Phase 2 — Multi-camera + channel auto-load.** N×N grid. Channel-template probing (§3, method B) with parallel connect + timeout. Sub-stream handling. **Selective/spotlight inference** so the grid stays performant.
+```bash
+# NVIDIA driver (matching CUDA 12.x for Ampere) + verify
+nvidia-smi
 
-**Phase 3 — Features layer.** The 7 YOLO modes as per-camera overlay toggles. Model swapping per camera. Confidence/IoU sliders. Tracking (ByteTrack) as a modifier.
+# Headless: do NOT install a desktop environment on the server. Saves RAM + VRAM.
 
-**Phase 4 — Applications layer.** Wrap Ultralytics solutions: Head Count, Customer In/Out (line crossing), Manager Presence (ROI + timer), Heatmap, Intrusion Alarm, Privacy Blur. Build the ROI/line drawing tool. Add the YOLOE/YOLO-World custom-prompt box. Tackle Mobile-Usage last (it's the hardest — §6).
+# Python env
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
 
-**Phase 5 — Telemetry, alerts & polish.** Left-sidebar telemetry + scrolling alerts feed over WebSocket. Snapshot/record/export. Apply your shadcn theme thoroughly. Wrap in Tauri/Electron for the native desktop demo build with your logo splash.
+# Core libs
+pip install ultralytics            # YOLO26 + export + ByteTrack built in
+pip install onnx onnxruntime-gpu
+pip install opencv-python           # use opencv-python (not headless) only if you need GUI; on a
+                                    # headless server prefer opencv-python-headless
+pip install redis pyyaml pynvml
+# GPU decode (recommended, pip-installable):
+pip install PyNvVideoCodec          # NVDEC straight to GPU tensors (zero-copy via DLPack)
+# TensorRT: install matching your CUDA (via pip 'tensorrt' wheel or NVIDIA repo)
+pip install tensorrt
+```
 
-**Phase 6 — Robustness & extras.** ONVIF auto-discovery (§3, method A). Performance tuning (frame-skip tuning, model size auto-selection by hardware). A swappable library of client-ready models (PPE, fire/smoke, ANPR).
+Sanity-check NVDEC and TensorRT exist:
+```bash
+python -c "import tensorrt as trt; print(trt.__version__)"
+python -c "import PyNvVideoCodec as nvc; print('nvdec ok')"
+```
+
+### 5.2 Model export: `.pt` → ONNX → TensorRT engine (Phase 1)
+
+`scripts/export_model.py`:
+```python
+from ultralytics import YOLO
+
+model = YOLO("models/yolo26n.pt")
+
+# Export straight to a TensorRT engine with dynamic batch (up to 15) and FP16.
+model.export(
+    format="engine",     # TensorRT
+    half=True,           # FP16 — uses your tensor cores
+    dynamic=True,        # allow variable batch size
+    batch=15,            # max batch = number of cameras
+    imgsz=640,
+    device=0,
+    workspace=4,         # GB of scratch TRT may use while building (cap it for 8GB card)
+)
+# Produces models/yolo26n.engine
+```
+
+Notes:
+- The engine is **built for THIS GPU**. Rebuild it on every machine model you ship to (a 3070 Ti engine won't run optimally — or at all — on a different card).
+- Build once, cache the `.engine`. Building takes minutes; loading is fast.
+- INT8 later (§9) gives more speed but needs a calibration set and accuracy validation. Start FP16.
+
+### 5.3 Camera capture worker — NVDEC, threaded, drop-old (Phase 1→2)
+
+You have two solid GPU-decode paths. Pick one.
+
+**Option A — GStreamer via OpenCV (quick to wire, element names vary).**
+```python
+import cv2
+
+def gst_pipeline(rtsp_url):
+    # IMPORTANT: element names differ by platform.
+    #  - Desktop dGPU with NVIDIA gst plugins: nvh264dec / nvh265dec (or 'nvdec')
+    #  - Jetson / DeepStream installs: nvv4l2decoder
+    # Test `gst-inspect-1.0 | grep nv` to see what you actually have.
+    return (
+        f"rtspsrc location={rtsp_url} latency=100 protocols=tcp ! "
+        "rtph264depay ! h264parse ! nvh264dec ! "      # GPU decode
+        "videoconvert ! video/x-raw,format=BGR ! "
+        "appsink drop=true max-buffers=1 sync=false"    # <-- drop-old, no buffering
+    )
+
+cap = cv2.VideoCapture(gst_pipeline(url), cv2.CAP_GSTREAMER)
+```
+The `drop=true max-buffers=1` is the key line — it throws away stale frames so you always read the *current* scene.
+
+**Option B — PyNvVideoCodec (cleanest GPU-native, recommended).** Decodes directly to GPU; hand frames to the model without a CPU round-trip.
+
+Either way, wrap each camera in a **thread** that pushes the latest frame into a size-1 buffer:
+
+`src/capture/rtsp_worker.py`:
+```python
+import threading, time, cv2
+
+class CameraWorker(threading.Thread):
+    def __init__(self, cam_id, url, buffer):
+        super().__init__(daemon=True)
+        self.cam_id, self.url, self.buffer = cam_id, url, buffer
+        self.running = True
+
+    def run(self):
+        while self.running:
+            cap = cv2.VideoCapture(gst_pipeline(self.url), cv2.CAP_GSTREAMER)
+            if not cap.isOpened():
+                time.sleep(2)               # reconnection backoff
+                continue
+            fail = 0
+            while self.running:
+                ok, frame = cap.read()
+                if not ok:
+                    fail += 1
+                    if fail > 30:           # camera died → reconnect
+                        break
+                    continue
+                fail = 0
+                self.buffer.put(self.cam_id, frame)   # overwrites old frame
+            cap.release()
+            time.sleep(1)                   # then loop → reconnect
+```
+
+### 5.4 Latest-frame buffer (drop-old)
+
+`src/capture/frame_buffer.py`:
+```python
+import threading
+
+class LatestFrameBuffer:
+    """One slot per camera. New frame overwrites the old one. Never queues stale frames."""
+    def __init__(self):
+        self._frames = {}
+        self._lock = threading.Lock()
+
+    def put(self, cam_id, frame):
+        with self._lock:
+            self._frames[cam_id] = (frame, time.monotonic())
+
+    def snapshot(self):
+        # Return current frame for every camera that has one
+        with self._lock:
+            return {cid: f for cid, (f, _) in self._frames.items()}
+```
+
+### 5.5 Batch builder (Phase 2)
+
+`src/inference/batch_builder.py`:
+```python
+def build_batch(buffer, active_cam_ids):
+    frames, cam_order = [], []
+    snap = buffer.snapshot()
+    for cid in active_cam_ids:
+        if cid in snap:
+            frames.append(snap[cid])
+            cam_order.append(cid)
+    return frames, cam_order   # frames -> one inference call; cam_order maps results back
+```
+
+### 5.6 Inference worker — one engine, dynamic batch (Phase 2)
+
+`src/inference/engine.py` (Ultralytics-loads-engine path — fastest to build):
+```python
+from ultralytics import YOLO
+
+class Detector:
+    def __init__(self, engine_path, imgsz=640, conf=0.35):
+        self.model = YOLO(engine_path)     # loads the TensorRT .engine
+        self.imgsz, self.conf = imgsz, conf
+
+    def detect_batch(self, frames):
+        # frames: list of images (1..15). ONE batched call.
+        results = self.model.predict(frames, imgsz=self.imgsz,
+                                     conf=self.conf, verbose=False, device=0)
+        return results                     # list aligned to input order
+```
+
+The orchestrator loop (in `pipeline.py`) ties it together:
+```python
+frame_id = 0
+while running:
+    active = motion_gate.active_cameras()          # §5.8
+    detect_now = [c for c in active if frame_id % DET_INTERVAL[c] == 0]
+    if detect_now:
+        frames, order = build_batch(buffer, detect_now)
+        if frames:
+            results = detector.detect_batch(frames)
+            for cid, res in zip(order, results):
+                dets = parse(res)
+                tracks = trackers[cid].update(dets)   # §5.7
+                logic[cid].process(tracks)            # §5.10
+    else:
+        # no detection this frame → trackers predict only
+        for cid in active:
+            trackers[cid].predict_only()
+    frame_id += 1
+```
+
+### 5.7 Tracking — ByteTrack, detect-every-N (Phase 3)
+
+Easiest: let Ultralytics run ByteTrack with `model.track(..., tracker="bytetrack.yaml")`. For per-camera control, use the standalone tracker (e.g. the `supervision` library's ByteTrack) so you keep one tracker instance **per camera**:
+
+```python
+# src/tracking/tracker.py
+from supervision import ByteTrack   # or ultralytics' built-in
+class CameraTracker:
+    def __init__(self):
+        self.bt = ByteTrack()
+    def update(self, detections):
+        return self.bt.update_with_detections(detections)
+```
+
+**Detection interval** (`DET_INTERVAL`) per camera, in `settings.yaml`:
+- Busy entry/exit / theft zones: every **2nd** frame.
+- Quiet desks: every **5th** frame.
+- The tracker carries IDs between detections, so you run YOLO 5–15× less often.
+
+### 5.8 Motion gating (Phase 4)
+
+`src/motion/motion_gate.py`:
+```python
+import cv2
+class MotionGate:
+    def __init__(self):
+        self.bg = {}   # one subtractor per camera
+    def is_active(self, cam_id, frame, min_area=500):
+        if cam_id not in self.bg:
+            self.bg[cam_id] = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
+        small = cv2.resize(frame, (320, 180))      # cheap: run on a downscaled gray frame
+        mask = self.bg[cam_id].apply(small)
+        return int((mask > 0).sum()) > min_area    # enough motion?
+```
+**Caveat:** do not motion-gate theft / small-hand-movement zones — subtle activity can be missed. Use it for empty rooms, corridors, inactive desks. Make it per-zone in config.
+
+### 5.9 ROI / zones (Phase 4)
+
+Per camera, store zone polygons in `config/zones/<cam_id>.json`. Two uses:
+- **Crop** to a zone before inference when only a small area matters (fewer pixels = less GPU).
+- **Filter** detections by zone for logic ("person in restricted area", "object left desk zone").
+
+```python
+import numpy as np, cv2
+def in_zone(point, polygon):
+    return cv2.pointPolygonTest(np.array(polygon, np.int32), point, False) >= 0
+```
+
+### 5.10 Business logic (Phase 5)
+
+`src/logic/base.py` — one handler per camera, stateful (uses track IDs over time):
+```python
+class LogicHandler:
+    def __init__(self, cam_cfg): self.cfg = cam_cfg
+    def process(self, tracks):  raise NotImplementedError
+```
+Examples:
+- **Headcount:** count unique active track IDs of class `person` in a zone.
+- **Desk activity:** person present + hand/object motion inside desk ROI over a time window.
+- **Theft:** object (phone/bag/laptop) track disappears near a person track / crosses an exit zone → raise event. This is where track IDs matter — you reason about objects *over time*, not single frames.
+
+### 5.11 Events / alerts (Phase 5)
+
+`src/events/publisher.py`:
+```python
+import redis, json, time
+class EventPublisher:
+    def __init__(self, host="localhost"):
+        self.r = redis.Redis(host=host)
+    def emit(self, cam_id, event_type, payload):
+        msg = {"cam": cam_id, "type": event_type, "ts": time.time(), **payload}
+        self.r.xadd("cctv:events", {"data": json.dumps(msg)})   # Redis stream
+```
+Dashboards / DB writers / notifiers subscribe to `cctv:events` independently. This decouples detection from delivery.
+
+### 5.12 Config (15 cameras)
+
+`config/cameras.yaml`:
+```yaml
+cameras:
+  - id: cam01
+    url: "rtsp://user:pass@192.168.1.11:554/substream"   # use SUBSTREAM for AI
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount, desk_activity]
+    zones_file: zones/cam01.json
+  - id: cam02
+    url: "rtsp://user:pass@192.168.1.12:554/substream"
+    det_interval: 2
+    motion_gate: false          # theft zone → never gate
+    logic: [theft, headcount]
+    zones_file: zones/cam02.json
+  # ... cam03 .. cam15
+```
+`config/settings.yaml`:
+```yaml
+model:
+  engine: models/yolo26n.engine
+  imgsz: 640
+  conf: 0.35
+  max_batch: 15
+pipeline:
+  default_det_interval: 3
+redis:
+  host: localhost
+```
+
+### 5.13 Monitoring (Phase 6)
+
+`src/monitoring/metrics.py` — track per-stage timings and GPU state. Use `pynvml` for GPU/VRAM/decoder utilisation:
+```python
+import pynvml
+pynvml.nvmlInit()
+h = pynvml.nvmlDeviceGetHandleByIndex(0)
+def gpu_stats():
+    util = pynvml.nvmlDeviceGetUtilizationRates(h)
+    mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+    return {"gpu_util": util.gpu, "vram_used_mb": mem.used // 1024**2}
+```
+Log per camera: effective FPS, end-to-end latency, queue/drops. Watch the **decoder** column in `nvidia-smi dmon -s u` separately — it can saturate before compute does.
+
+### 5.14 RTSP resilience
+
+15 real cameras *will* drop. Built into §5.3: reconnect with backoff, per-camera failure counter, daemon threads so one dead camera never kills the pipeline. Add a watchdog that flags a camera as "down" in metrics if no frame arrives for N seconds.
 
 ---
 
-## 10. First-week target for the coding agent
+## 6. VRAM & RAM management strategy (critical for 8 GB / 16 GB)
 
-Don't build features — **build the spine.** Deliver Phase 0 plus a single RTSP stream (Phase 1 partial). Concretely:
+- **One engine, shared.** Single `Detector` instance for all 15 cameras.
+- **YOLO26n at 640.** Upgrade to `s` only if accuracy fails; re-check VRAM headroom after.
+- **Cap TensorRT workspace** at build time (`workspace=4`) so the build doesn't over-allocate.
+- **Keep frames on the GPU** (PyNvVideoCodec / GStreamer NVMM) to avoid CPU↔GPU copies and to spare your 16 GB system RAM.
+- **Headless server.** No desktop = more free VRAM and RAM.
+- **Sub-stream for AI.** 1080p (or lower) sub-stream, not the 4K main stream.
+- **Bounded everything.** Size-1 frame buffers; drop-old. No unbounded Python queues (they eat RAM and process stale video).
+- Keep **~1.5–2 GB VRAM free** as headroom; if `nvmlDeviceGetMemoryInfo` shows < 1 GB free, reduce batch or imgsz.
 
-- FastAPI service that opens a webcam *and* one RTSP URL, runs `yolo26n` detect, and serves annotated MJPEG at `/stream/{cam_id}`
-- React app: splash → setup/skip → dashboard with one live annotated feed in the center and a Detect/Track toggle in the right sidebar
-- WebSocket pushing `{ fps, inference_ms, counts }` to a basic left-sidebar readout
+---
 
-Once that spine is alive, every Feature and Application is an incremental addition on a proven pipeline — which is exactly how you avoid the trap of building a beautiful React UI that can't actually talk to a camera.
+## 7. Benchmark plan (with target numbers for your box)
+
+Run `scripts/benchmark.py` at **1 → 2 → 4 → 8 → 15** cameras, same model / resolution / source. Log per config:
+
+- FPS per camera **and** end-to-end latency (capture → event). Watch both — high FPS on stale frames is a failure.
+- GPU util, **decoder util**, VRAM used.
+- CPU util, system RAM.
+- Stage timings: decode, preprocess, inference, postprocess, tracking, logic.
+- Dropped/stale frames, queue depths.
+- Accuracy delta: FP32 vs FP16 (and later INT8); detect-every-frame vs every-3rd.
+
+**Targets you should be able to hit on the 3070 Ti** (YOLO26n FP16, 640, det-interval 3, motion gating on quiet cams):
+
+| Cameras | Detection FPS/cam | GPU util | VRAM | Verdict |
+|---|---|---|---|---|
+| 1 | 30 (easily) | low | ~1.5 GB | trivial |
+| 4 | 15–30 | moderate | ~2 GB | comfortable |
+| 8 | 12–20 | higher | ~2.5 GB | comfortable |
+| **15** | **8–12** | high, not pinned | **~3–4 GB** | **the goal — works with headroom** |
+
+If at 15 cams GPU util pins ~100% *with* batching + frame-skip + motion-gating already on, only then consider INT8 (§9) or a second GPU.
+
+---
+
+## 8. Deployment
+
+- **Docker** with the NVIDIA Container Toolkit; run `--gpus all`. Base image: an NVIDIA CUDA/TensorRT runtime image matching your driver.
+- **docker-compose**: one service for the pipeline, one for Redis.
+- **Autostart**: `systemd` unit (or `restart: unless-stopped` in compose) so it survives reboots.
+- **Build the `.engine` inside the target machine's environment** (or a matching one) — engines are GPU/driver-specific.
+- Logs + metrics to a volume; expose a small health endpoint.
+
+---
+
+## 9. Risks & tradeoffs (specific to this hardware)
+
+- **8 GB ceiling.** Biggest risk. Adding heavy per-camera secondary models (pose, segmentation, ReID) will blow the budget. Add them only behind triggers, on cropped ROIs, not full-time on 15 streams.
+- **INT8 accuracy.** INT8 buys speed but can hurt small-object detection (distant phones, small bags). Calibrate on real footage and validate before shipping. FP16 is the safe default.
+- **Single NVDEC.** Fine for 15×1080p H.264. If cameras are 4K or you also decode main streams for recording, the decoder can saturate before compute — use sub-streams and prefer **H.265** (roughly half the decode load of H.264).
+- **Frame-skip misses brief events.** Lower `det_interval` on theft/critical zones.
+- **Motion-gating misses subtle activity.** Never gate theft/hand zones; combine with periodic forced detection.
+- **GStreamer element naming.** Desktop NVDEC element names differ from Jetson docs — verify with `gst-inspect-1.0`. PyNvVideoCodec sidesteps this.
+- **16 GB RAM.** Stay headless, keep buffers tiny; if you add many CPU-side logic processes, watch RAM.
+
+---
+
+## 10. Timeline / milestones
+
+| Milestone | Deliverable | Rough effort |
+|---|---|---|
+| M0 | Env ready, `nvidia-smi`/TRT/NVDEC verified | 0.5 day |
+| M1 | YOLO26n `.engine`; 1 camera NVDEC→engine→boxes | 1–2 days |
+| M2 | 15 cameras, threaded decode, drop-old buffers, **batched** inference | 3–5 days |
+| M3 | ByteTrack + detect-every-N | 2–3 days |
+| M4 | Motion gating + ROI/zones | 2–3 days |
+| M5 | Business logic (headcount/desk/theft) + Redis events | 4–7 days |
+| M6 | Monitoring, Docker, reconnection, autostart, benchmark report | 3–5 days |
+
+Each milestone is shippable and benchmarkable.
+
+---
+
+## 11. Cheat sheet
+
+**Do immediately:**
+1. Export YOLO26n → **TensorRT FP16 engine**, dynamic batch 15.
+2. One **shared** engine, **batched** inference across cameras.
+3. **NVDEC** decode in **threaded** workers with **drop-old** size-1 buffers.
+4. **Detect every 3rd frame + ByteTrack.**
+5. **Motion-gate** quiet cameras; **ROI** the rest.
+6. Use camera **sub-streams** for the AI.
+7. Profile decode / preprocess / inference / postprocess / tracking **separately**.
+
+**Stop immediately:**
+- One `model(frame)` call per camera / one model copy per camera.
+- CPU decoding via plain `cv2.VideoCapture(rtsp)`.
+- Unbounded queues / processing stale frames.
+- Full-frame detection when a zone is enough.
+- Running `.pt` PyTorch in production.
+- Segmentation when detection is enough.
+- 1280px or 4K inference across 15 streams on this 8 GB card.
+
+**The one-line mindset shift:** *not* "one camera = one YOLO loop," but "**15 cameras feed one optimized GPU pipeline.**"
+
+**Skip (for your scale):** DeepStream (revisit only if you push toward 30+ cams/box), Triton, Kubernetes.

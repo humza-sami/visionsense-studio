@@ -1,1 +1,0 @@
-# VisionSense Studio — FastAPI Backend
