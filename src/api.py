@@ -51,34 +51,108 @@ def create_app(pipeline: Pipeline, jpeg_quality: int = 70, preview_max_fps: int 
     def index():
         cams = pipeline.camera_ids()
         tiles = "".join(
-            f'<div class="tile"><div class="cap">{c}</div>'
-            f'<img src="/stream/{c}" alt="{c}"/></div>'
+            f'<div class="tile" data-cam="{c}">'
+            f'  <div class="bar"><span class="dot" data-dot></span>'
+            f'    <span class="name">{c}</span>'
+            f'    <span class="badge" data-fps>– fps</span>'
+            f'    <span class="badge" data-obj>– obj</span></div>'
+            f'  <img src="/stream/{c}" alt="{c}"/>'
+            f'  <div class="err" data-err></div>'
+            f'</div>'
             for c in cams
         )
+        empty = '<p style="padding:20px;color:#9aa4b2">No enabled cameras. Edit config/cameras.yaml.</p>'
         return f"""<!doctype html><html><head><meta charset="utf-8"/>
 <title>VisionSense Studio</title>
 <style>
-  body{{margin:0;background:#0b0e14;color:#e6e6e6;font-family:system-ui,sans-serif}}
-  header{{padding:14px 20px;font-size:18px;font-weight:600;border-bottom:1px solid #1d2330;
-          display:flex;justify-content:space-between;align-items:center}}
-  #stats{{font-size:12px;color:#9aa4b2;font-weight:400}}
-  .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px;padding:16px}}
-  .tile{{background:#121722;border:1px solid #1d2330;border-radius:10px;overflow:hidden}}
+  :root{{--bg:#0b0e14;--panel:#121722;--line:#1d2330;--muted:#9aa4b2;--fg:#e6e6e6}}
+  *{{box-sizing:border-box}}
+  body{{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,sans-serif}}
+  header{{padding:12px 18px;border-bottom:1px solid var(--line);display:flex;
+          justify-content:space-between;align-items:center;gap:16px;position:sticky;top:0;
+          background:var(--bg);z-index:5}}
+  header .title{{font-size:17px;font-weight:600}}
+  header .title small{{color:var(--muted);font-weight:400;margin-left:8px}}
+  #stats{{font-size:12px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap}}
+  #stats b{{color:var(--fg);font-weight:600}}
+  .wrap{{display:grid;grid-template-columns:1fr 320px;gap:14px;padding:14px;align-items:start}}
+  @media(max-width:900px){{.wrap{{grid-template-columns:1fr}}}}
+  .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}}
+  .tile{{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}}
   .tile img{{width:100%;display:block;background:#000;aspect-ratio:16/9;object-fit:contain}}
-  .cap{{padding:8px 10px;font-size:13px;color:#9aa4b2}}
+  .bar{{display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:12px}}
+  .bar .name{{font-weight:600;margin-right:auto}}
+  .dot{{width:9px;height:9px;border-radius:50%;background:#6b7280;flex:0 0 auto}}
+  .dot.on{{background:#34c759;box-shadow:0 0 6px #34c75988}}
+  .dot.off{{background:#ff453a}}
+  .badge{{background:#0b0e14;border:1px solid var(--line);border-radius:6px;
+          padding:2px 7px;color:var(--muted);font-variant-numeric:tabular-nums}}
+  .err{{color:#ff6b6b;font-size:11px;padding:0 10px 8px;min-height:0}}
+  aside{{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+         position:sticky;top:64px;max-height:calc(100vh - 88px);display:flex;flex-direction:column}}
+  aside h2{{margin:0;padding:12px 14px;font-size:13px;border-bottom:1px solid var(--line);
+            color:var(--muted);text-transform:uppercase;letter-spacing:.04em}}
+  #events{{overflow:auto;padding:8px;display:flex;flex-direction:column;gap:6px}}
+  .ev{{border:1px solid var(--line);border-left-width:3px;border-radius:6px;padding:7px 9px;font-size:12px}}
+  .ev .row{{display:flex;justify-content:space-between;gap:8px}}
+  .ev .typ{{font-weight:600}}
+  .ev .meta{{color:var(--muted);font-size:11px;margin-top:2px;word-break:break-word}}
+  .ev.headcount{{border-left-color:#4f8ef5}}
+  .ev.theft_suspected{{border-left-color:#ff453a}}
+  .ev.desk_active{{border-left-color:#34c759}}
+  .ev .cam{{color:var(--muted)}}
+  .empty{{color:var(--muted);font-size:12px;padding:14px}}
 </style></head><body>
-<header><span>VisionSense Studio — live detections</span><span id="stats">loading…</span></header>
-<div class="grid">{tiles or '<p style="padding:20px">No enabled cameras. Edit config/cameras.yaml.</p>'}</div>
+<header>
+  <div class="title">VisionSense Studio<small>live detections</small></div>
+  <div id="stats"><span>connecting…</span></div>
+</header>
+<div class="wrap">
+  <div class="grid">{tiles or empty}</div>
+  <aside><h2>Events</h2><div id="events"><div class="empty">No events yet.</div></div></aside>
+</div>
 <script>
-async function poll(){{
+const fmtTime = ts => new Date(ts*1000).toLocaleTimeString();
+async function pollStatus(){{
   try{{
-    const r = await fetch('/status'); const s = await r.json();
-    const g = s.gpu && s.gpu.available ? `GPU ${{s.gpu.gpu_util}}% · VRAM ${{s.gpu.vram_used_mb}}/${{s.gpu.vram_total_mb}}MB` : 'GPU n/a (dev)';
-    document.getElementById('stats').textContent = `loop ${{s.loop_fps}} fps · ${{g}}`;
-  }}catch(e){{}}
-  setTimeout(poll, 1500);
+    const s = await (await fetch('/status')).json();
+    const g = s.gpu && s.gpu.available
+      ? `GPU <b>${{s.gpu.gpu_util}}%</b> · VRAM <b>${{s.gpu.vram_used_mb}}/${{s.gpu.vram_total_mb}}</b>MB`
+      : 'GPU <b>n/a</b> (dev/CPU)';
+    const inf = (s.stage_ms && s.stage_ms.inference) ? `infer <b>${{s.stage_ms.inference}}</b>ms` : '';
+    let conn = 0, total = 0;
+    document.querySelectorAll('.tile').forEach(t=>{{
+      const cam = t.dataset.cam, c = (s.cameras||{{}})[cam] || {{}};
+      total++;
+      const dot = t.querySelector('[data-dot]');
+      const live = c.connected !== false;  // file/loop sources may flap; treat undefined as on
+      if(c.connected===true){{dot.className='dot on'; conn++;}}
+      else if(c.connected===false){{dot.className='dot off';}}
+      else {{dot.className='dot'; conn++;}}
+      t.querySelector('[data-fps]').textContent = (c.detect_fps??'–')+' fps';
+      t.querySelector('[data-obj]').textContent = (c.objects??'–')+' obj';
+      t.querySelector('[data-err]').textContent = (c.connected===false && c.last_error) ? c.last_error : '';
+    }});
+    document.getElementById('stats').innerHTML =
+      `loop <b>${{s.loop_fps}}</b> fps · ${{inf}} · cams <b>${{conn}}/${{total}}</b> · ${{g}}`;
+  }}catch(e){{ document.getElementById('stats').textContent='status unavailable'; }}
+  setTimeout(pollStatus, 1500);
 }}
-poll();
+async function pollEvents(){{
+  try{{
+    const evs = await (await fetch('/events?limit=40')).json();
+    const el = document.getElementById('events');
+    if(!evs.length){{ el.innerHTML='<div class="empty">No events yet.</div>'; }}
+    else el.innerHTML = evs.map(e=>{{
+      const meta = Object.entries(e.payload||{{}}).map(([k,v])=>`${{k}}: ${{Array.isArray(v)?'['+v.join(', ')+']':v}}`).join(' · ');
+      return `<div class="ev ${{e.type}}"><div class="row"><span class="typ">${{e.type}}</span>`
+           + `<span class="cam">${{e.cam}} · ${{fmtTime(e.ts)}}</span></div>`
+           + (meta?`<div class="meta">${{meta}}</div>`:'')+`</div>`;
+    }}).join('');
+  }}catch(e){{}}
+  setTimeout(pollEvents, 1500);
+}}
+pollStatus(); pollEvents();
 </script>
 </body></html>"""
 

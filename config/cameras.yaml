@@ -1,32 +1,134 @@
-# 15-camera config. For macOS dev, cam01 uses the built-in webcam (url: 0) so you
-# can run the whole pipeline locally. The RTSP cameras are disabled until you are
-# on the server — flip `enabled: true` and set real substream URLs there.
+# 15-camera config — Dahua/CP-Plus NVR at 103.83.89.187.
+# URL pattern:  rtsp://<user>:<pass>@<host>:554/cam/realmonitor?channel=N&subtype=S
+#   password welcome@123 is URL-encoded as welcome%40123 (the %40 is '@').
+#
+# SUBSTREAM vs MAIN (read PLAN.md §0): subtype=1 is the low-res SUBSTREAM, subtype=0
+# is the high-res MAIN stream. This file uses subtype=1 because 15 main streams will
+# NOT fit the 8 GB GPU / single NVDEC. If a camera has no substream enabled on the
+# NVR, change just that camera's URL to subtype=0 (or enable the substream in the
+# NVR's encode settings — recommended).
+#
+# Per-camera knobs: det_interval (run YOLO every Nth frame), motion_gate (skip static
+# frames — NEVER on a theft zone), logic (headcount/desk_activity/theft), zones_file.
+# Defaults below are uniform; specialise per camera once you know what each one views.
 
 cameras:
-  # ── Local dev camera (webcam). Works on macOS today. ──────────────────────
   - id: cam01
-    url: 0                  # webcam index; or a file path / rtsp url
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=1&subtype=1"
     det_interval: 3
-    motion_gate: false      # webcam is usually active; gating not useful here
+    motion_gate: true
     logic: [headcount]
     zones_file: null
     enabled: true
 
-  # ── Production cameras (Ubuntu). Use the SUBSTREAM for AI, not the 4K main. ─
   - id: cam02
-    url: "rtsp://user:pass@192.168.1.12:554/substream"
-    det_interval: 2         # busy/theft zone → detect often
-    motion_gate: false      # never gate a theft zone
-    logic: [theft, headcount]
-    zones_file: config/zones/cam02.json
-    enabled: false
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=2&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
 
   - id: cam03
-    url: "rtsp://user:pass@192.168.1.13:554/substream"
-    det_interval: 5         # quiet desk → detect rarely
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=3&subtype=1"
+    det_interval: 3
     motion_gate: true
-    logic: [desk_activity, headcount]
+    logic: [headcount]
     zones_file: null
-    enabled: false
+    enabled: true
 
-  # cam04 .. cam15: copy a block above, bump the id/url, set per-zone options.
+  - id: cam04
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=4&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam05
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=5&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam06
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=6&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam07
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=7&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam08
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=8&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam09
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=9&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam10
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=10&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam11
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=11&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam12
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=12&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam13
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=13&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam14
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=14&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true
+
+  - id: cam15
+    url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=15&subtype=1"
+    det_interval: 3
+    motion_gate: true
+    logic: [headcount]
+    zones_file: null
+    enabled: true

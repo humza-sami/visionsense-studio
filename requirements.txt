@@ -1,7 +1,12 @@
 # ── Core (cross-platform: works on macOS dev and Ubuntu prod) ────────────────
-ultralytics>=8.3.0        # YOLO + export + built-in trackers
-supervision>=0.21.0       # per-camera ByteTrack + detection helpers
-opencv-python>=4.9.0      # capture + drawing (see README: GStreamer note for prod)
+ultralytics>=8.3.0        # YOLO26 + export + built-in trackers (yolo26n.pt verified)
+supervision>=0.21.0,<0.30 # per-camera ByteTrack. NOTE: sv.ByteTrack is removed in
+                          # 0.30 — keep <0.30 until tracker.py migrates to its successor.
+# Pick ONE opencv wheel (installing both breaks cv2):
+#   opencv-python           → has GUI/imshow, needs system libGL (Dockerfile installs it)
+#   opencv-python-headless  → no GUI deps; REQUIRED on a headless box with no libGL.
+# This pipeline never calls imshow, so headless is the safe default for the server.
+opencv-python-headless>=4.9.0  # swap to opencv-python only if you want local GUI windows
 numpy>=1.26
 pyyaml>=6.0
 fastapi>=0.110

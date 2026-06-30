@@ -72,6 +72,11 @@ class Detector:
             classes=self.cfg.classes,
             device=self.device,
             verbose=False,
+            # Square letterbox (no rectangular inference). The TensorRT engine is
+            # built with static H×W (only batch is dynamic), so every frame must be
+            # padded to imgsz×imgsz; rect inference would feed e.g. 384×640 and fail
+            # the engine's shape check. Harmless (and consistent) for the .pt path too.
+            rect=False,
         )
         return [self._parse(r) for r in results]
 

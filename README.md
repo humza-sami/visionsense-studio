@@ -40,24 +40,41 @@ downloads the YOLO weights.
 > `config/settings.yaml` (or `MODEL_WEIGHTS` env) to a shipping model such as
 > `yolo11n.pt` — it's just a string the loader passes to Ultralytics.
 
-## Move to Ubuntu (tomorrow)
+## Run on Ubuntu / RTX (the production box)
+
+This box ships with a system Python that's often too new for the ML stack and may
+have **no `pip`**. Use [`uv`](https://docs.astral.sh/uv/) to provision a known-good
+Python 3.12 + all deps in userspace — **no sudo needed** for the CPU/dev path:
 
 ```bash
-# 1. Install GPU extras (NOT on macOS):
-pip install -r requirements.txt
-pip install tensorrt onnx onnxruntime-gpu pynvml PyNvVideoCodec
+# 0. Userspace toolchain (no sudo):
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python torch torchvision --index-url https://download.pytorch.org/whl/cpu
+uv pip install --python .venv/bin/python -r requirements.txt
 
-# 2. Build the TensorRT engine ON THIS GPU (engines are GPU/driver-specific):
-python scripts/export_model.py models/yolo26n.pt 640 15      # → models/yolo26n.engine
+# 1. Smoke-test the whole pipeline with NO camera/GPU (synthetic people clip):
+.venv/bin/python scripts/make_test_video.py     # writes test_assets/people.mp4
+.venv/bin/python scripts/smoke_test.py          # asserts detect→track→event works
 
-# 3. Point real cameras at the SUBSTREAM, enable them in config/cameras.yaml,
-#    set capture.backend + model.device as needed, then:
-python -m src.main
+# 2. GPU path (needs sudo for driver/CUDA/redis — idempotent, re-run after reboot):
+bash scripts/setup_gpu.sh
+#   → installs NVIDIA driver, CUDA torch, TensorRT, redis, and BUILDS the .engine.
+
+# 3. Point real cameras at the SUBSTREAM, set enabled:true in config/cameras.yaml,
+#    then run (engine is auto-selected once CUDA is available):
+.venv/bin/python -m src.main          # open http://<server-ip>:8000/
 # or containerised:
 docker compose -f docker/docker-compose.yml up --build
 ```
 
-Benchmark the box: `python scripts/benchmark.py 15 50` (target: ~8–12 FPS/cam @ 15).
+Benchmark the box: `.venv/bin/python scripts/benchmark.py 15 50` (target: ~8–12 FPS/cam @ 15).
+
+> The TensorRT `.engine` is built **for this exact GPU + driver** by
+> `scripts/setup_gpu.sh` (or `scripts/export_model.py`). It loads automatically
+> once `model.device` resolves to `cuda:0` and `models/yolo26n.engine` exists;
+> until then the `.pt` runs on CPU so the system is always functional.
 
 ### Prod decode note (important)
 The pip `opencv-python` wheel is **not built with GStreamer**, so the NVDEC
@@ -97,7 +114,9 @@ src/
   events/     publisher (redis + in-memory ring), schemas
   monitoring/ metrics (pynvml + FPS)
   zones.py viz.py types.py config.py pipeline.py api.py main.py
-scripts/      export_model.py (→ TensorRT), benchmark.py
+scripts/      setup_gpu.sh (driver/CUDA/TensorRT/redis/engine bootstrap),
+              export_model.py (→ TensorRT), benchmark.py,
+              make_test_video.py + smoke_test.py (headless end-to-end check)
 docker/       Dockerfile, docker-compose.yml
 ```
 

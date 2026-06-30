@@ -33,7 +33,7 @@ api:
   preview_max_fps: 15
 
 redis:
-  enabled: false            # true on the server if you run a redis container
+  enabled: true             # redis-server installed + enabled (systemd) on this box
   host: localhost
   port: 6379
   stream: cctv:events

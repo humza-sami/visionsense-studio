@@ -48,3 +48,8 @@ logs/
 # Recordings
 recordings/
 snapshots/
+
+# Generated test assets (synthetic smoke-test clip)
+test_assets/
+*.mp4
+*.avi
