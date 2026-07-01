@@ -53,9 +53,13 @@ def gst_nvdec_pipeline(rtsp_url: str, cfg: CaptureConfig, codec: str = "h264") -
     """
     depay = "rtph265depay ! h265parse" if codec == "h265" else "rtph264depay ! h264parse"
     dec = "nvh265dec" if codec == "h265" else "nvh264dec"
+    # nvh264dec/nvh265dec (the nvcodec NVDEC plugin) output frames in CUDA device
+    # memory, so a `cudadownload` is required before the CPU `videoconvert` to BGR
+    # that OpenCV's appsink expects. drop=true/max-buffers=1 keeps only the latest
+    # frame (drop-old). Verified: `nvh264dec` engages the GPU's NVDEC decoder.
     return (
         f"rtspsrc location={rtsp_url} latency=100 protocols={cfg.rtsp_transport} ! "
-        f"{depay} ! {dec} ! "
+        f"{depay} ! {dec} ! cudadownload ! "
         "videoconvert ! video/x-raw,format=BGR ! "
         "appsink drop=true max-buffers=1 sync=false"
     )

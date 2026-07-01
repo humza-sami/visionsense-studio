@@ -13,6 +13,17 @@
 # Defaults below are uniform; specialise per camera once you know what each one views.
 
 cameras:
+  # ── DEMO camera (always-on, loops a local clip) so the dashboard shows live GPU
+  #    detection even while the real RTSP cameras are unreachable. Remove this block
+  #    for pure production once the 15 cameras are confirmed working.
+  - id: cam-demo
+    url: "test_assets/people_h264.mp4"
+    det_interval: 2
+    motion_gate: false
+    logic: [headcount, theft]
+    zones_file: null
+    enabled: true
+
   - id: cam01
     url: "rtsp://test:welcome%40123@103.83.89.187:554/cam/realmonitor?channel=1&subtype=1"
     det_interval: 3

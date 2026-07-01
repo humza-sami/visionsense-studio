@@ -1,0 +1,22 @@
+[Unit]
+Description=VisionSense Studio — multi-camera CCTV detection pipeline
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=humza
+WorkingDirectory=/home/humza/Personal/visionsense-studio
+Environment=PYTHONPATH=/home/humza/Personal/visionsense-studio
+Environment=PYTHONUNBUFFERED=1
+# Ultralytics/torch caches in the user home; keep them there.
+Environment=HOME=/home/humza
+ExecStart=/home/humza/Personal/visionsense-studio/.venv/bin/python -m src.main
+Restart=always
+RestartSec=5
+# Give the GPU model load + engine init time before considering it failed.
+TimeoutStartSec=120
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

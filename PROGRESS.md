@@ -1,5 +1,38 @@
 # Project Progress Log
 
+## [2026-06-30] - GPU LIVE: driver+CUDA+TensorRT, engine, Redis, NVDEC verified
+**Agent:** claude-opus-4-8
+
+### What Changed (this box is now a working GPU deployment)
+* **NVIDIA stack installed & active**: driver 595.71.05 (nvidia-driver-595-open, DKMS),
+  rebooted to swap nouveau→nvidia. `nvidia-smi` sees the RTX 3070 Ti. Passwordless sudo
+  was granted by the user to do this.
+* **CUDA PyTorch + TensorRT** in the venv: `torch 2.6.0+cu124`, `tensorrt-cu12 11.1.0.106`.
+* **TensorRT engine built**: `models/yolo26n.engine`. Ultralytics' native export wanted a
+  ~4 GB `nvidia-modelopt[onnx]` tree (and would clobber torch), so we build the engine
+  directly from the ONNX via the TRT Python API — `scripts/build_engine_from_onnx.py`.
+  This TRT-11 binding dropped the global FP16 BuilderFlag (strongly-typed networks); we
+  enable TF32 (Ampere tensor cores). Engine bench: **batch-15 = 23.5 fps/cam, 3.1 GB VRAM**
+  — beats the plan's 8–12 fps/cam target. Inference dropped 32 ms (.pt) → 11 ms (engine).
+* **Detector fix**: pass `rect=False` so square 640×640 letterbox matches the engine's
+  static H×W (only batch is dynamic); rect inference fed 384×640 and failed the shape check.
+* **Redis live**: `redis-server` installed + enabled (systemd); `redis.enabled: true`.
+  Verified events publish to the `cctv:events` stream (XADD/XREVRANGE).
+* **NVDEC verified**: installed GStreamer + nvcodec; `nvh264dec` hardware-decodes H.264
+  (decoder util confirmed on nvidia-smi). Fixed the capture pipeline to insert
+  `cudadownload` before `videoconvert` (nvcodec outputs CUDA memory).
+* **Config**: all 15 real cameras (Dahua NVR, substream subtype=1) + an always-on `cam-demo`
+  (local H.264 clip) so the dashboard shows live detection regardless of camera reachability.
+* **Autostart**: `deploy/visionsense.service` + `deploy/install_service.sh` (systemd, runs
+  on boot, restarts on failure, auto-reconnects cameras).
+
+### Blocker (external, not code)
+* **The 15 RTSP cameras are unreachable from this box.** The NVR's public IP
+  103.83.89.187 is dead on every port (554/80/37777/8000) from here, and outbound :554 to
+  the public internet is firewalled. The cameras come online automatically (worker reconnect)
+  the moment a path is opened: open outbound TCP 554, OR use the NVR's LAN IP if this server
+  is on the same network, OR VPN. Nothing in software can bypass a blocked network path.
+
 ## [2026-06-30] - Verified end-to-end on the Ubuntu/RTX box + UI + GPU bootstrap
 **Agent:** claude-opus-4-8
 
