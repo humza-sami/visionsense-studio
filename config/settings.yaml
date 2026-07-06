@@ -4,16 +4,16 @@
 model:
   # Dev (macOS / no CUDA): the .pt is loaded (CPU or Apple MPS).
   # Prod (Ubuntu / CUDA):  if the .engine exists it is preferred automatically.
-  weights: models/yolo26n.pt
-  engine: models/yolo26n.engine
+  weights: models/yolo26x.pt
+  engine: models/yolo26x.engine
   imgsz: 640            # keep 640 across 15 cams on 8 GB; drop to 512 if tight
   conf: 0.35
   iou: 0.45
-  max_batch: 15         # = number of cameras
+  max_batch: 5          # YOLO x-large needs smaller chunks on 8 GB VRAM
   device: auto          # auto | cpu | mps | cuda:0
-  # COCO class filter: person, backpack, handbag, suitcase, laptop, cell phone.
-  # Set to null to keep all classes.
-  classes: [0, 24, 26, 28, 63, 67]
+  # null = detect ALL 80 COCO classes (person, chair, keyboard, tv, laptop, mouse,
+  # bottle, cup, etc.). Set to a list to restrict (e.g. [0,24,26,28,63,67]).
+  classes: null
 
 pipeline:
   default_det_interval: 3   # run YOLO every Nth frame; tracker fills the gaps
@@ -23,6 +23,7 @@ pipeline:
 capture:
   backend: auto             # auto | opencv | gstreamer | pynvc
   rtsp_transport: tcp       # tcp is more reliable for RTSP over flaky links
+  codec: h265               # NVR streams are H.265 (HEVC) → nvh265dec NVDEC
   reconnect_backoff_s: 2
   read_fail_limit: 30       # consecutive read failures before reconnect
 

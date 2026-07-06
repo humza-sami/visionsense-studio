@@ -6,7 +6,7 @@ from __future__ import annotations
 import time
 
 import cv2
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from src.pipeline import Pipeline
@@ -47,16 +47,30 @@ def create_app(pipeline: Pipeline, jpeg_quality: int = 70, preview_max_fps: int 
             media_type="multipart/x-mixed-replace; boundary=frame",
         )
 
+    @app.get("/snapshot/{cam_id}")
+    def snapshot(cam_id: str):
+        """Single latest annotated JPEG (short-lived request). Used by the grid so a
+        browser's ~6-connections-per-host cap doesn't starve a 15-camera wall the way
+        15 persistent MJPEG streams would."""
+        frame = pipeline.get_annotated(cam_id)
+        if frame is None:
+            return Response(status_code=204)
+        ok, buf = cv2.imencode(".jpg", frame, encode_params)
+        if not ok:
+            return Response(status_code=204)
+        return Response(content=buf.tobytes(), media_type="image/jpeg",
+                        headers={"Cache-Control": "no-store"})
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         cams = pipeline.camera_ids()
         tiles = "".join(
-            f'<div class="tile" data-cam="{c}">'
+            f'<div class="tile" data-cam="{c}" tabindex="0" role="button" aria-label="Open {c}">'
             f'  <div class="bar"><span class="dot" data-dot></span>'
             f'    <span class="name">{c}</span>'
             f'    <span class="badge" data-fps>– fps</span>'
             f'    <span class="badge" data-obj>– obj</span></div>'
-            f'  <img src="/stream/{c}" alt="{c}"/>'
+            f'  <img data-img alt="{c}"/>'
             f'  <div class="err" data-err></div>'
             f'</div>'
             for c in cams
@@ -78,7 +92,10 @@ def create_app(pipeline: Pipeline, jpeg_quality: int = 70, preview_max_fps: int 
   .wrap{{display:grid;grid-template-columns:1fr 320px;gap:14px;padding:14px;align-items:start}}
   @media(max-width:900px){{.wrap{{grid-template-columns:1fr}}}}
   .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px}}
-  .tile{{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}}
+  .tile{{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;
+         cursor:pointer;transition:border-color .12s ease,transform .12s ease}}
+  .tile:hover,.tile:focus{{border-color:#4f8ef5;outline:none}}
+  .tile:active{{transform:scale(.997)}}
   .tile img{{width:100%;display:block;background:#000;aspect-ratio:16/9;object-fit:contain}}
   .bar{{display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:12px}}
   .bar .name{{font-weight:600;margin-right:auto}}
@@ -102,6 +119,15 @@ def create_app(pipeline: Pipeline, jpeg_quality: int = 70, preview_max_fps: int 
   .ev.desk_active{{border-left-color:#34c759}}
   .ev .cam{{color:var(--muted)}}
   .empty{{color:var(--muted);font-size:12px;padding:14px}}
+  .viewer{{position:fixed;inset:0;background:#05070bcc;z-index:20;display:none;
+           grid-template-rows:auto 1fr;padding:18px;gap:12px}}
+  .viewer.open{{display:grid}}
+  .viewerTop{{display:flex;align-items:center;gap:12px;color:var(--fg)}}
+  .viewerTop strong{{font-size:16px}}
+  .viewerTop button{{margin-left:auto;width:36px;height:36px;border-radius:8px;border:1px solid #30394a;
+                     background:#121722;color:var(--fg);font-size:20px;line-height:1;cursor:pointer}}
+  .viewer img{{width:100%;height:100%;min-height:0;object-fit:contain;background:#000;
+               border:1px solid #30394a;border-radius:8px}}
 </style></head><body>
 <header>
   <div class="title">VisionSense Studio<small>live detections</small></div>
@@ -110,6 +136,10 @@ def create_app(pipeline: Pipeline, jpeg_quality: int = 70, preview_max_fps: int 
 <div class="wrap">
   <div class="grid">{tiles or empty}</div>
   <aside><h2>Events</h2><div id="events"><div class="empty">No events yet.</div></div></aside>
+</div>
+<div id="viewer" class="viewer" aria-hidden="true">
+  <div class="viewerTop"><strong data-viewer-cam></strong><button id="viewerClose" aria-label="Close">x</button></div>
+  <img id="viewerImg" alt="enlarged detection stream"/>
 </div>
 <script>
 const fmtTime = ts => new Date(ts*1000).toLocaleTimeString();
@@ -152,7 +182,45 @@ async function pollEvents(){{
   }}catch(e){{}}
   setTimeout(pollEvents, 1500);
 }}
-pollStatus(); pollEvents();
+// Snapshot polling per tile (short requests) instead of 15 persistent MJPEG
+// streams — otherwise the browser's ~6-connections-per-host cap blanks most tiles.
+// Chained onload keeps each tile refreshing without piling up requests.
+function startImages(){{
+  document.querySelectorAll('.tile').forEach(t=>{{
+    const cam = t.dataset.cam, img = t.querySelector('[data-img]');
+    const next = ()=>{{ img.src = '/snapshot/' + cam + '?_=' + Date.now(); }};
+    img.onload  = ()=> setTimeout(next, 180);   // ~5 fps/tile
+    img.onerror = ()=> setTimeout(next, 600);
+    next();
+  }});
+}}
+function openViewer(cam){{
+  const viewer = document.getElementById('viewer');
+  document.querySelector('[data-viewer-cam]').textContent = cam;
+  document.getElementById('viewerImg').src = '/stream/' + cam + '?_=' + Date.now();
+  viewer.classList.add('open');
+  viewer.setAttribute('aria-hidden', 'false');
+}}
+function closeViewer(){{
+  const viewer = document.getElementById('viewer');
+  viewer.classList.remove('open');
+  viewer.setAttribute('aria-hidden', 'true');
+  document.getElementById('viewerImg').removeAttribute('src');
+}}
+function bindViewer(){{
+  document.querySelectorAll('.tile').forEach(t=>{{
+    t.addEventListener('click', ()=>openViewer(t.dataset.cam));
+    t.addEventListener('keydown', e=>{{
+      if(e.key === 'Enter' || e.key === ' '){{ e.preventDefault(); openViewer(t.dataset.cam); }}
+    }});
+  }});
+  document.getElementById('viewerClose').addEventListener('click', closeViewer);
+  document.getElementById('viewer').addEventListener('click', e=>{{ if(e.target.id === 'viewer') closeViewer(); }});
+  document.addEventListener('keydown', e=>{{ if(e.key === 'Escape') closeViewer(); }});
+  const initial = new URLSearchParams(location.search).get('cam');
+  if(initial) setTimeout(()=>openViewer(initial), 600);
+}}
+pollStatus(); pollEvents(); startImages(); bindViewer();
 </script>
 </body></html>"""
 

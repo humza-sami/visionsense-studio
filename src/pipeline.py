@@ -124,10 +124,12 @@ class Pipeline:
 
         if detect_now:
             t = time.monotonic()
-            frames, order = build_batch(self.buffer, detect_now)
-            if frames:
-                results = self.detector.detect_batch(frames)  # ONE batched call
-                self.metrics.set_stage_ms("inference", (time.monotonic() - t) * 1000)
+            max_batch = max(1, self.settings.model.max_batch or len(detect_now))
+            for i in range(0, len(detect_now), max_batch):
+                frames, order = build_batch(self.buffer, detect_now[i:i + max_batch])
+                if not frames:
+                    continue
+                results = self.detector.detect_batch(frames)
                 for cid, dets in zip(order, results):
                     tracks = self.trackers[cid].update(dets)
                     self._last_tracks[cid] = tracks
@@ -135,6 +137,7 @@ class Pipeline:
                     for h in self.handlers[cid]:
                         for ev in h.process(tracks):
                             self.events.emit(ev)
+            self.metrics.set_stage_ms("inference", (time.monotonic() - t) * 1000)
 
         # 3) Update preview for every camera that has a frame (detected or not).
         for cam in self.cams:

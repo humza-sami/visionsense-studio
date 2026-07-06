@@ -53,12 +53,16 @@ def gst_nvdec_pipeline(rtsp_url: str, cfg: CaptureConfig, codec: str = "h264") -
     """
     depay = "rtph265depay ! h265parse" if codec == "h265" else "rtph264depay ! h264parse"
     dec = "nvh265dec" if codec == "h265" else "nvh264dec"
+    # Transport: "auto"/empty → let rtspsrc negotiate (udp→tcp), which is what many
+    # GStreamer-based RTSP servers (e.g. phone IP-cam apps) require. "tcp"/"udp"
+    # force that protocol (tcp is steadier for Dahua/RTSP over flaky/WAN links).
+    proto = "" if cfg.rtsp_transport in ("auto", "", None) else f"protocols={cfg.rtsp_transport} "
     # nvh264dec/nvh265dec (the nvcodec NVDEC plugin) output frames in CUDA device
     # memory, so a `cudadownload` is required before the CPU `videoconvert` to BGR
     # that OpenCV's appsink expects. drop=true/max-buffers=1 keeps only the latest
     # frame (drop-old). Verified: `nvh264dec` engages the GPU's NVDEC decoder.
     return (
-        f"rtspsrc location={rtsp_url} latency=100 protocols={cfg.rtsp_transport} ! "
+        f"rtspsrc location={rtsp_url} latency=100 {proto}! "
         f"{depay} ! {dec} ! cudadownload ! "
         "videoconvert ! video/x-raw,format=BGR ! "
         "appsink drop=true max-buffers=1 sync=false"
@@ -74,7 +78,7 @@ def open_capture(url, cfg: CaptureConfig) -> cv2.VideoCapture:
     is_stream = isinstance(url, str) and url.lower().startswith(("rtsp://", "rtmp://", "http"))
 
     if backend == "gstreamer" and is_stream:
-        pipeline = gst_nvdec_pipeline(url, cfg)
+        pipeline = gst_nvdec_pipeline(url, cfg, codec=getattr(cfg, "codec", "h264"))
         cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         if cap.isOpened():
             return cap

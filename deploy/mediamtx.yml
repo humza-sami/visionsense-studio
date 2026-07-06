@@ -1,0 +1,9 @@
+# Local RTSP relay for the 15-camera benchmark. The "live" path accepts a publisher
+# (ffmpeg loops an H.264 clip into it); the pipeline reads copies from
+# rtsp://127.0.0.1:8554/live. One publisher, many readers — mirrors an NVR fan-out.
+logLevel: info
+rtsp: yes
+rtspAddress: :8554
+paths:
+  live:
+    source: publisher

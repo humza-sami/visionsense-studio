@@ -1,0 +1,1082 @@
+# VisionSense use-case corpus — every app from the YOLO detection catalog,
+# decomposed into a FIXED primitive vocabulary. This file is both:
+#   1. the test-case set the builder must be able to express, and
+#   2. the training corpus for pattern extraction (what primitives exist,
+#      how they combine, what each vertical actually needs).
+#
+# Every use case = PERCEIVE (models+classes) → TRACK → CONDITION (rule) → EMIT (sink).
+# The `uses` tags are validated against `vocabulary` by scripts/validate_usecases.py.
+# `rule` is the human-readable form of the same logic; `fps` is the per-camera
+# inference-rate hint for capacity planning (feeds the model_ladder / gpu calculator).
+
+version: 1
+
+vocabulary:
+  models:
+    - det.coco      # pretrained ultralytics COCO detector — works day one
+    - det.custom    # fine-tuned detector (needs labeled frames)
+    - pose          # YOLO-pose keypoints (fall / fight / posture)
+    - face.embed    # face detector + ArcFace embeddings
+    - reid.embed    # appearance embeddings (person/cattle re-identification)
+    - ocr           # text recognition stage (plates, labels)
+    - cls.attr      # secondary classifier on a track crop (uniform, machine-on, age/gender)
+  spatial:
+    - presence      # class present in zone (bool)
+    - absence       # class NOT present in zone (bool)
+    - count         # number of tracks of class in zone (int)
+    - line_cross    # track crosses a directed line (event)
+    - dwell         # per-track time inside zone (duration)
+    - proximity     # distance between two tracks below threshold (bool)
+    - vanish        # tracked object disappears after having property P (event)
+    - stationary    # track unmoved for duration (abandoned / blockage)
+    - posture       # pose label on a person track (fall, fight, bend, lie)
+    - identity      # who/what specifically (face id, plate string, cattle id)
+    - attribute     # secondary property of a track (uniform, helmet-on, machine-on, age)
+  temporal:
+    - sustained     # condition must hold >= T before firing (debounce)
+    - schedule      # condition gated by time window (business hours, night, shift)
+    - rate          # aggregate events per bucket (hourly footfall)
+    - edge          # emit only on state change
+    - cooldown      # suppress repeat alerts for same subject
+    - duration      # measure/accumulate elapsed time as the output itself
+  join:
+    - list_match    # identity vs static list (roster, whitelist, watchlist, VIP)
+    - roster_compare  # aggregate count/ids vs expected roster
+    - event_correlate # join with external event stream (POS, badge, dispatch, payment)
+  sink:
+    - alert         # push notification (WhatsApp/app) with snapshot, cooldown
+    - log           # append record (attendance row, violation with photo)
+    - metric        # live dashboard value (occupancy, utilization)
+    - heatmap       # spatial accumulation rendered over the camera view
+    - report        # periodic rollup (hourly/daily/shift)
+    - signal        # hardware/output trigger (siren, machine cutoff, gate relay)
+
+# ── canonical cross-vertical modules (§11) — the sales menu; each maps to kernels ──
+modules:
+  face_attendance:   {kernels: [identity], verticals: all}
+  zone_intrusion:    {kernels: [zone_state], verticals: all}
+  alpr:              {kernels: [identity], verticals: [warehouse, mall, logistics, residential]}
+  object_removal:    {kernels: [object_lifecycle], verticals: all}
+  ppe_uniform:       {kernels: [attribute], verticals: [factory, food, hospital, retail]}
+  fire_smoke:        {kernels: [zone_state], verticals: all}
+  phone_usage:       {kernels: [proximity, zone_state], verticals: all}
+  presence_idle:     {kernels: [zone_state, dwell], verticals: all}
+  footfall_queue:    {kernels: [line_cross, zone_state, dwell], verticals: all}
+  weapon:            {kernels: [zone_state], verticals: [bank, school, mall]}
+  fall_man_down:     {kernels: [posture], verticals: [hospital, factory, mall]}
+  abandoned_object:  {kernels: [object_lifecycle], verticals: [mall, mosque, bank]}
+
+usecases:
+
+  # ════════════════════ 1. RETAIL ════════════════════
+  - id: retail.face-attendance
+    name: Face-recognition attendance
+    vertical: retail
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: identity(face@zone:entrance) matched(staff_roster) -> log(check_in/out); schedule(after shift_start) -> alert(late)
+    uses: {spatial: [identity, presence], temporal: [schedule, cooldown], join: [list_match], sink: [log, alert]}
+    fps: 5
+
+  - id: retail.counter-unmanned
+    name: Counter/reception coverage
+    vertical: retail
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: absence(person, zone:counter) sustained>5m during schedule:business_hours -> alert(snapshot)
+    uses: {spatial: [absence], temporal: [sustained, schedule, cooldown], join: [], sink: [alert]}
+    fps: 2
+
+  - id: retail.aisle-heatmap
+    name: Product dwell heatmaps
+    vertical: retail
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: dwell(person, zone:aisle_*) accumulated -> heatmap + report(daily)
+    uses: {spatial: [dwell], temporal: [rate, duration], join: [], sink: [heatmap, report]}
+    fps: 3
+
+  - id: retail.footfall
+    name: Footfall counting + hourly traffic
+    vertical: retail
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: line_cross(person, line:entrance, in|out) rate(hourly) -> metric + report
+    uses: {spatial: [line_cross], temporal: [rate], join: [], sink: [metric, report]}
+    fps: 8
+
+  - id: retail.occupancy
+    name: Live occupancy & staff-to-customer ratio
+    vertical: retail
+    models: [det.coco, cls.attr]
+    classes: [person]
+    custom_classes: [staff_uniform]
+    rule: count(person, store) split by attribute(uniform) -> metric; ratio>threshold sustained -> alert
+    uses: {spatial: [count, attribute], temporal: [sustained, edge], join: [], sink: [metric, alert]}
+    fps: 2
+
+  - id: retail.shelf-gap
+    name: Out-of-stock / empty-shelf detection
+    vertical: retail
+    models: [det.custom]
+    classes: []
+    custom_classes: [shelf_gap]
+    rule: presence(shelf_gap, zone:shelf_*) sustained>10m -> alert(restock) + log
+    uses: {spatial: [presence], temporal: [sustained, cooldown], join: [], sink: [alert, log]}
+    fps: 0.2
+
+  - id: retail.aisle-blockage
+    name: Aisle organization / blockage
+    vertical: retail
+    models: [det.custom]
+    classes: []
+    custom_classes: [fallen_item, box_on_floor]
+    rule: stationary(box_on_floor, zone:aisle) sustained>5m -> alert; count -> metric(org_score)
+    uses: {spatial: [stationary, count], temporal: [sustained], join: [], sink: [alert, metric]}
+    fps: 0.5
+
+  - id: retail.staff-phone
+    name: Staff mobile-usage detection
+    vertical: retail
+    models: [det.coco]
+    classes: [person, cell phone]
+    custom_classes: []
+    rule: proximity(cell_phone, person@zone:staff) sustained>30s during schedule:shift -> alert(snapshot) + log
+    uses: {spatial: [proximity, presence], temporal: [sustained, schedule, cooldown], join: [], sink: [alert, log]}
+    fps: 5
+
+  - id: retail.seat-presence
+    name: Manager seat presence & idle time
+    vertical: retail
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: presence(person, zone:seat) duration accumulated -> metric; absence sustained>15m during schedule -> alert
+    uses: {spatial: [presence, absence], temporal: [duration, sustained, schedule, edge], join: [], sink: [metric, alert]}
+    fps: 1
+
+  - id: retail.theft-exit
+    name: Theft / shoplifting suspicion
+    vertical: retail
+    models: [det.coco]
+    classes: [person, backpack, handbag]
+    custom_classes: [product_item]
+    rule: vanish(item near person) OR line_cross(item, line:exit) without event_correlate(pos_sale, 60s) -> alert(snapshot)
+    uses: {spatial: [vanish, proximity, line_cross], temporal: [sustained, cooldown], join: [event_correlate], sink: [alert]}
+    fps: 10
+
+  - id: retail.loitering
+    name: Loitering near high-value shelves
+    vertical: retail
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: dwell(person, zone:high_value) > 3m -> alert(snapshot, cooldown)
+    uses: {spatial: [dwell], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 3
+
+  - id: retail.queue-length
+    name: Checkout queue analytics
+    vertical: retail
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: count(person, zone:queue) > N sustained>2m -> alert(open_counter); rate -> report
+    uses: {spatial: [count], temporal: [sustained, rate, edge], join: [], sink: [alert, metric, report]}
+    fps: 1
+
+  - id: retail.vip-watchlist
+    name: Returning-customer / VIP / shoplifter watchlist
+    vertical: retail
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: identity(face) matched(vip_list|watchlist) -> alert(who, snapshot)
+    uses: {spatial: [identity], temporal: [cooldown], join: [list_match], sink: [alert, log]}
+    fps: 5
+
+  - id: retail.uniform-compliance
+    name: Staff-in-uniform compliance
+    vertical: retail
+    models: [det.coco, cls.attr]
+    classes: [person]
+    custom_classes: [staff_uniform]
+    rule: attribute(person@zone:floor, uniform)==false AND matched(staff_roster) -> log(violation, photo)
+    uses: {spatial: [attribute, presence], temporal: [sustained], join: [list_match], sink: [log, alert]}
+    fps: 1
+
+  - id: retail.cleaning-verification
+    name: Housekeeping verification
+    vertical: retail
+    models: [det.custom]
+    classes: [person]
+    custom_classes: [mop, cleaning_cart]
+    rule: presence(person+mop, zone:floor_area) during schedule(09:00 window) sustained>2m -> log(cleaned); else -> alert(missed)
+    uses: {spatial: [presence, proximity], temporal: [schedule, sustained], join: [], sink: [log, alert]}
+    fps: 1
+
+  # ════════════════ 2. DISTRIBUTORS & WAREHOUSES ════════════════
+  - id: warehouse.gate-attendance
+    name: Warehouse attendance + unauthorized entry
+    vertical: warehouse
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: identity(face@zone:gate) matched(roster) -> log(check_in); unmatched -> alert(unauthorized, snapshot)
+    uses: {spatial: [identity, presence], temporal: [cooldown], join: [list_match], sink: [log, alert]}
+    fps: 5
+
+  - id: warehouse.zone-intrusion
+    name: Restricted-zone intrusion (stockroom, cash room)
+    vertical: warehouse
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: presence(person, zone:restricted) [optionally schedule:after_hours] -> alert(whatsapp, snapshot)
+    uses: {spatial: [presence], temporal: [schedule, cooldown], join: [], sink: [alert]}
+    fps: 2
+
+  - id: warehouse.box-counting
+    name: Automated stock counting on conveyor/pallet
+    vertical: warehouse
+    models: [det.custom]
+    classes: []
+    custom_classes: [carton]
+    rule: line_cross(carton, line:conveyor) count -> metric; total vs event_correlate(dispatch_order) mismatch -> alert
+    uses: {spatial: [line_cross, count], temporal: [rate], join: [event_correlate], sink: [metric, alert, report]}
+    fps: 15
+
+  - id: warehouse.carry-out-theft
+    name: Theft-of-material at exits
+    vertical: warehouse
+    models: [det.custom]
+    classes: [person]
+    custom_classes: [carton]
+    rule: proximity(person, carton) AND line_cross(person, line:exit) outside schedule:dispatch_hours -> alert(snapshot)
+    uses: {spatial: [proximity, line_cross], temporal: [schedule, cooldown], join: [], sink: [alert]}
+    fps: 10
+
+  - id: warehouse.gate-alpr
+    name: Gate ALPR vehicle logging
+    vertical: warehouse
+    models: [det.coco, det.custom, ocr]
+    classes: [car, truck]
+    custom_classes: [license_plate]
+    rule: identity(plate@zone:gate) -> log(in/out); matched(dispatch_orders) fail -> alert
+    uses: {spatial: [identity, line_cross], temporal: [cooldown], join: [event_correlate, list_match], sink: [log, alert]}
+    fps: 5
+
+  - id: warehouse.forklift-nearmiss
+    name: Forklift–person proximity safety
+    vertical: warehouse
+    models: [det.custom, det.coco]
+    classes: [person]
+    custom_classes: [forklift]
+    rule: proximity(forklift, person) < D sustained>1s -> alert + signal(siren); rate -> report(near_miss)
+    uses: {spatial: [proximity], temporal: [sustained, cooldown, rate], join: [], sink: [alert, signal, report]}
+    fps: 10
+
+  - id: warehouse.blocked-exit
+    name: Blocked fire-exit / lane detection
+    vertical: warehouse
+    models: [det.custom]
+    classes: []
+    custom_classes: [pallet]
+    rule: stationary(pallet, zone:fire_exit) sustained>2m -> alert(snapshot)
+    uses: {spatial: [stationary, presence], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 0.5
+
+  - id: warehouse.picker-idle
+    name: Worker productivity / idle time
+    vertical: warehouse
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: dwell(person, zone:picking) with no line_cross activity -> duration(idle) -> metric + report(shift)
+    uses: {spatial: [dwell, presence], temporal: [duration, rate], join: [], sink: [metric, report]}
+    fps: 1
+
+  - id: warehouse.fallen-goods
+    name: Damage & spillage alerts
+    vertical: warehouse
+    models: [det.custom]
+    classes: []
+    custom_classes: [fallen_package, spill]
+    rule: presence(fallen_package|spill, zone:floor) -> alert(snapshot)
+    uses: {spatial: [presence], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 0.5
+
+  - id: warehouse.container-tamper
+    name: Container tamper detection at loading bay
+    vertical: warehouse
+    models: [det.custom]
+    classes: []
+    custom_classes: [broken_seal, open_container]
+    rule: presence(broken_seal, zone:bay) -> alert(snapshot) + log
+    uses: {spatial: [presence], temporal: [cooldown], join: [], sink: [alert, log]}
+    fps: 1
+
+  - id: warehouse.ghost-employee
+    name: Ghost-employee detection
+    vertical: warehouse
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: unique identities seen per shift vs roster_compare(shift_roster) -> report(discrepancies)
+    uses: {spatial: [identity, count], temporal: [rate, schedule], join: [roster_compare, list_match], sink: [report, alert]}
+    fps: 2
+
+  # ════════════════ 3a. BANKS ════════════════
+  - id: bank.queue-sla
+    name: Branch queue analytics & teller SLA
+    vertical: bank
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: count(person, zone:queue) + dwell per track -> metric(wait_time); > SLA -> alert
+    uses: {spatial: [count, dwell], temporal: [sustained, rate], join: [], sink: [metric, alert, report]}
+    fps: 2
+
+  - id: bank.covered-face
+    name: Helmet/mask/covered-face at entrance
+    vertical: bank
+    models: [det.coco, cls.attr]
+    classes: [person]
+    custom_classes: [helmet, covered_face]
+    rule: attribute(person@zone:entrance, face_covered)==true -> alert(security, snapshot)
+    uses: {spatial: [attribute, presence], temporal: [cooldown], join: [], sink: [alert]}
+    fps: 5
+
+  - id: bank.vault-after-hours
+    name: Vault/locker zone after-hours intrusion
+    vertical: bank
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: presence(person, zone:vault) during schedule:after_hours -> alert + signal(alarm)
+    uses: {spatial: [presence], temporal: [schedule, cooldown], join: [], sink: [alert, signal]}
+    fps: 2
+
+  - id: bank.weapon
+    name: Weapon detection
+    vertical: bank
+    models: [det.custom]
+    classes: []
+    custom_classes: [gun, knife_held]
+    rule: presence(gun|knife_held) sustained>0.5s -> alert(panic) + signal
+    uses: {spatial: [presence], temporal: [sustained, cooldown], join: [], sink: [alert, signal]}
+    fps: 10
+
+  - id: bank.atm-loitering
+    name: ATM vestibule loitering / skimmer posture
+    vertical: bank
+    models: [det.coco, pose]
+    classes: [person]
+    custom_classes: []
+    rule: dwell(person, zone:atm) > 5m without transaction event_correlate -> alert; posture(crouched_at_machine) sustained -> alert
+    uses: {spatial: [dwell, posture], temporal: [sustained, cooldown], join: [event_correlate], sink: [alert]}
+    fps: 5
+
+  # ════════════════ 3b. OFFICES / BPO ════════════════
+  - id: office.seat-time
+    name: Face attendance + time-on-seat dashboards
+    vertical: office
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: identity at entry -> log; presence(person, zone:desk_*) duration -> metric(time_on_seat) + report(daily)
+    uses: {spatial: [identity, presence], temporal: [duration, rate, schedule], join: [list_match], sink: [log, metric, report]}
+    fps: 2
+
+  - id: office.phone-usage
+    name: Phone-usage policy compliance
+    vertical: office
+    models: [det.coco]
+    classes: [person, cell phone]
+    custom_classes: []
+    rule: proximity(cell_phone, person@zone:floor) sustained>1m -> log(violation) + report
+    uses: {spatial: [proximity, presence], temporal: [sustained, cooldown], join: [], sink: [log, report]}
+    fps: 3
+
+  - id: office.meeting-room
+    name: Meeting-room occupancy / space utilization
+    vertical: office
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: count(person, zone:room_*) -> metric; utilization rate -> report(weekly)
+    uses: {spatial: [count], temporal: [rate, duration, edge], join: [], sink: [metric, report]}
+    fps: 0.5
+
+  - id: office.tailgating
+    name: Tailgating at access doors
+    vertical: office
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: line_cross(person, line:door) count==2+ within 3s of ONE event_correlate(badge_swipe) -> alert(snapshot)
+    uses: {spatial: [line_cross, count], temporal: [sustained, cooldown], join: [event_correlate], sink: [alert, log]}
+    fps: 10
+
+  # ════════════════ 3c. SCHOOLS ════════════════
+  - id: school.classroom-attendance
+    name: Per-classroom face attendance
+    vertical: school
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: identity(face@zone:classroom) matched(class_roster) during schedule:period -> log; roster_compare -> report(absentees)
+    uses: {spatial: [identity, count], temporal: [schedule, rate], join: [list_match, roster_compare], sink: [log, report]}
+    fps: 2
+
+  - id: school.fight-detection
+    name: Fight/aggression posture detection
+    vertical: school
+    models: [det.coco, pose]
+    classes: [person]
+    custom_classes: []
+    rule: posture(fight|aggression) on 2+ proximate persons sustained>2s -> alert(immediate, snapshot)
+    uses: {spatial: [posture, proximity], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 10
+
+  - id: school.perimeter
+    name: Unauthorized adult / perimeter crossing
+    vertical: school
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: line_cross(person, line:perimeter) -> alert; identity unmatched(staff+parent list) in campus -> alert
+    uses: {spatial: [line_cross, identity], temporal: [schedule, cooldown], join: [list_match], sink: [alert]}
+    fps: 5
+
+  - id: school.bus-counting
+    name: Bus child counting (no child left behind)
+    vertical: school
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: line_cross(person, line:bus_door, in|out) per identity -> log; on-board count != 0 at route end -> alert
+    uses: {spatial: [line_cross, count, identity], temporal: [schedule, edge], join: [list_match, roster_compare], sink: [log, alert]}
+    fps: 8
+
+  - id: school.corridor-density
+    name: Corridor crowd density / stampede prevention
+    vertical: school
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: count(person, zone:corridor) > threshold sustained>30s -> alert
+    uses: {spatial: [count], temporal: [sustained, edge], join: [], sink: [alert, metric]}
+    fps: 2
+
+  # ════════════════ 3d. HOSPITALS ════════════════
+  - id: hospital.fall-detection
+    name: Patient fall detection
+    vertical: hospital
+    models: [det.coco, pose]
+    classes: [person]
+    custom_classes: []
+    rule: posture(person, lying) outside zone:bed sustained>5s -> alert(nurse, snapshot)
+    uses: {spatial: [posture, presence], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 8
+
+  - id: hospital.bed-occupancy
+    name: Live bed availability
+    vertical: hospital
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: presence(person, zone:bed_*) edge-triggered -> metric(beds_free)
+    uses: {spatial: [presence, count], temporal: [edge, sustained], join: [], sink: [metric, report]}
+    fps: 0.5
+
+  - id: hospital.handwash
+    name: Hygiene-station usage compliance
+    vertical: hospital
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: dwell(person, zone:handwash_station) >= 20s before entering zone:ward -> log(compliant); else -> log(violation)
+    uses: {spatial: [dwell, line_cross], temporal: [sustained, rate], join: [], sink: [log, report]}
+    fps: 5
+
+  - id: hospital.ppe-ward
+    name: PPE (mask/gloves) compliance in wards & OT
+    vertical: hospital
+    models: [det.coco, cls.attr]
+    classes: [person]
+    custom_classes: [mask, gloves]
+    rule: attribute(person@zone:ot, mask)==false -> log(violation, photo) + alert
+    uses: {spatial: [attribute, presence], temporal: [sustained, cooldown], join: [], sink: [log, alert, report]}
+    fps: 1
+
+  - id: hospital.drug-cabinet
+    name: Restricted-drug-cabinet zone monitoring
+    vertical: hospital
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: presence(person, zone:cabinet) -> log(identity); unmatched(authorized_list) -> alert
+    uses: {spatial: [presence, identity], temporal: [cooldown], join: [list_match], sink: [log, alert]}
+    fps: 5
+
+  - id: hospital.wheelchair-tracking
+    name: Wheelchair/stretcher tracking
+    vertical: hospital
+    models: [det.custom]
+    classes: []
+    custom_classes: [wheelchair, stretcher]
+    rule: presence(wheelchair, zone:*) last-seen location -> metric(asset_map)
+    uses: {spatial: [presence, dwell], temporal: [edge], join: [], sink: [metric]}
+    fps: 0.5
+
+  - id: hospital.waiting-queue
+    name: Waiting-room queue analytics
+    vertical: hospital
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: count(person, zone:waiting) + dwell -> metric(wait_time) + report
+    uses: {spatial: [count, dwell], temporal: [rate], join: [], sink: [metric, report]}
+    fps: 1
+
+  # ════════════════ 4. FACTORIES ════════════════
+  - id: factory.ppe
+    name: PPE compliance (helmet/vest/gloves/boots/goggles)
+    vertical: factory
+    models: [det.custom, cls.attr]
+    classes: [person]
+    custom_classes: [helmet, vest, gloves, boots, goggles]
+    rule: attribute(person@zone:shopfloor, helmet)==false sustained>3s -> log(violation, photo) + alert
+    uses: {spatial: [attribute, presence], temporal: [sustained, cooldown, rate], join: [], sink: [log, alert, report]}
+    fps: 1
+
+  - id: factory.fire-smoke
+    name: Early visual fire/smoke detection
+    vertical: factory
+    models: [det.custom]
+    classes: []
+    custom_classes: [fire, smoke]
+    rule: presence(fire|smoke) sustained>2s -> alert(all_channels) + signal(alarm)
+    uses: {spatial: [presence], temporal: [sustained, cooldown], join: [], sink: [alert, signal]}
+    fps: 1
+
+  - id: factory.machine-utilization
+    name: Plant/machine working time (OEE-lite)
+    vertical: factory
+    models: [cls.attr, det.coco]
+    classes: [person]
+    custom_classes: [machine_on_indicator]
+    rule: attribute(zone:machine, running)==true AND presence(person, zone:operator) -> duration -> metric(utilization) + report(shift)
+    uses: {spatial: [attribute, presence], temporal: [duration, rate, schedule], join: [], sink: [metric, report]}
+    fps: 0.5
+
+  - id: factory.material-theft
+    name: Material theft at non-dispatch exits
+    vertical: factory
+    models: [det.custom, det.coco]
+    classes: [person]
+    custom_classes: [material_load]
+    rule: proximity(person, material_load) AND line_cross(line:non_dispatch_exit) -> alert(snapshot)
+    uses: {spatial: [proximity, line_cross], temporal: [schedule, cooldown], join: [], sink: [alert]}
+    fps: 10
+
+  - id: factory.danger-zone
+    name: Machine danger-zone intrusion
+    vertical: factory
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: presence(person, zone:danger) -> signal(machine_cutoff|siren) + alert; instant, no debounce
+    uses: {spatial: [presence], temporal: [cooldown], join: [], sink: [signal, alert]}
+    fps: 15
+
+  - id: factory.man-down
+    name: Injury / man-down detection
+    vertical: factory
+    models: [det.coco, pose]
+    classes: [person]
+    custom_classes: []
+    rule: posture(person, lying) sustained>10s -> alert(emergency, snapshot)
+    uses: {spatial: [posture], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 8
+
+  - id: factory.line-manning
+    name: Line manning vs roster / productivity
+    vertical: factory
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: count(person, zone:line_*) vs roster_compare(shift_plan) -> metric; short sustained>10m -> alert
+    uses: {spatial: [count], temporal: [sustained, rate, schedule], join: [roster_compare], sink: [metric, alert, report]}
+    fps: 0.5
+
+  - id: factory.smoking
+    name: No-smoking zone enforcement
+    vertical: factory
+    models: [det.custom]
+    classes: [person]
+    custom_classes: [cigarette]
+    rule: presence(cigarette near person, zone:no_smoking) -> alert(snapshot) + log
+    uses: {spatial: [presence, proximity], temporal: [sustained, cooldown], join: [], sink: [alert, log]}
+    fps: 3
+
+  - id: factory.weld-shield
+    name: Welding face-shield compliance
+    vertical: factory
+    models: [det.custom, cls.attr]
+    classes: [person]
+    custom_classes: [weld_flash, face_shield]
+    rule: presence(weld_flash) AND attribute(nearest person, face_shield)==false -> log(violation) + alert
+    uses: {spatial: [presence, attribute, proximity], temporal: [cooldown], join: [], sink: [log, alert]}
+    fps: 10
+
+  - id: factory.visual-qc
+    name: Visual QC reject detection on line
+    vertical: factory
+    models: [det.custom]
+    classes: []
+    custom_classes: [defect_dent, missing_label, color_fault]
+    rule: presence(defect_*, zone:inspection) per line_cross(product) -> signal(rejector) + metric(reject_rate)
+    uses: {spatial: [presence, line_cross, count], temporal: [rate], join: [], sink: [signal, metric, report]}
+    fps: 25
+
+  - id: factory.sack-counting
+    name: Sack/bag dispatch counting
+    vertical: factory
+    models: [det.custom]
+    classes: []
+    custom_classes: [sack]
+    rule: line_cross(sack, line:loading) count vs event_correlate(dispatch_order) -> metric; mismatch -> alert
+    uses: {spatial: [line_cross, count], temporal: [rate], join: [event_correlate], sink: [metric, alert, report]}
+    fps: 15
+
+  # ════════════════ 5. FOOD & RESTAURANTS ════════════════
+  - id: food.hygiene-ppe
+    name: Hairnet/gloves/apron/mask compliance
+    vertical: food
+    models: [det.custom, cls.attr]
+    classes: [person]
+    custom_classes: [hairnet, gloves, apron, mask]
+    rule: attribute(person@zone:kitchen, hairnet)==false sustained>5s -> log(violation, photo) + alert
+    uses: {spatial: [attribute, presence], temporal: [sustained, cooldown, rate], join: [], sink: [log, alert, report]}
+    fps: 1
+
+  - id: food.handwash-timer
+    name: Handwash compliance timer
+    vertical: food
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: dwell(person, zone:wash_station) >= 20s on kitchen entry -> log(compliant); else violation
+    uses: {spatial: [dwell, line_cross], temporal: [sustained, rate], join: [], sink: [log, report]}
+    fps: 5
+
+  - id: food.pest-detection
+    name: Rodent/pest detection (night mode)
+    vertical: food
+    models: [det.custom]
+    classes: []
+    custom_classes: [rodent, pest]
+    rule: presence(rodent) during schedule:night -> alert(snapshot) + log(audit_trail)
+    uses: {spatial: [presence], temporal: [schedule, cooldown], join: [], sink: [alert, log, report]}
+    fps: 2
+
+  - id: food.cleaning-schedule
+    name: Kitchen cleaning-schedule verification
+    vertical: food
+    models: [det.custom]
+    classes: [person]
+    custom_classes: [mop, cleaning_cart]
+    rule: presence(person+mop, zone:kitchen_area) during schedule(window) -> log(done); window missed -> alert
+    uses: {spatial: [presence, proximity], temporal: [schedule, sustained], join: [], sink: [log, alert]}
+    fps: 1
+
+  - id: food.table-occupancy
+    name: Table-turnover analytics
+    vertical: food
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: presence(person, zone:table_*) edge -> metric(occupied); duration per turnover -> report; free tables -> alert(host)
+    uses: {spatial: [presence, count], temporal: [edge, duration, rate], join: [], sink: [metric, report, alert]}
+    fps: 0.5
+
+  - id: food.qsr-queue
+    name: QSR counter queue / drive-thru wait
+    vertical: food
+    models: [det.coco]
+    classes: [person, car]
+    custom_classes: []
+    rule: count(person, zone:queue) > N -> alert(staffing); dwell(car, zone:drive_thru) -> metric(wait)
+    uses: {spatial: [count, dwell], temporal: [sustained, rate], join: [], sink: [alert, metric, report]}
+    fps: 2
+
+  - id: food.rider-pickup
+    name: Delivery-rider handoff timing
+    vertical: food
+    models: [det.custom]
+    classes: [person]
+    custom_classes: [rider_helmet_bag]
+    rule: presence(rider, zone:pickup) timestamp vs event_correlate(order_ready) -> metric(handoff_time)
+    uses: {spatial: [presence, attribute], temporal: [duration, edge], join: [event_correlate], sink: [metric, report]}
+    fps: 2
+
+  - id: food.plating-check
+    name: Order-completeness check before serving
+    vertical: food
+    models: [det.custom]
+    classes: []
+    custom_classes: [plate_component_a, plate_component_b]
+    rule: count(components, zone:pass) mismatch vs event_correlate(order_spec) -> alert(kitchen)
+    uses: {spatial: [count, presence], temporal: [edge], join: [event_correlate], sink: [alert, metric]}
+    fps: 5
+
+  - id: food.till-zone
+    name: Till-area monitoring / drawer-open-without-sale
+    vertical: food
+    models: [det.coco]
+    classes: [person]
+    custom_classes: [open_drawer]
+    rule: attribute(zone:till, drawer_open) without event_correlate(pos_sale, 30s) -> alert(flag) + log
+    uses: {spatial: [attribute, presence], temporal: [sustained, cooldown], join: [event_correlate], sink: [alert, log]}
+    fps: 5
+
+  - id: food.kitchen-fire
+    name: Kitchen fire early warning
+    vertical: food
+    models: [det.custom]
+    classes: []
+    custom_classes: [fire, smoke]
+    rule: presence(fire|smoke, zone:kitchen) sustained>2s -> alert + signal(alarm)
+    uses: {spatial: [presence], temporal: [sustained, cooldown], join: [], sink: [alert, signal]}
+    fps: 1
+
+  # ════════════════ 6. SHOPPING MALLS ════════════════
+  - id: mall.footfall
+    name: Footfall per entrance/floor/corridor
+    vertical: mall
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: line_cross(person, line:entrance_*|floor_*) rate(hourly) -> metric + report(tenant + management)
+    uses: {spatial: [line_cross], temporal: [rate], join: [], sink: [metric, report]}
+    fps: 8
+
+  - id: mall.dwell-heatmap
+    name: Zone dwell heatmaps (rent-pricing tool)
+    vertical: mall
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: dwell(person, zone:corridor_*) accumulated -> heatmap + report(monthly, per_zone)
+    uses: {spatial: [dwell], temporal: [rate, duration], join: [], sink: [heatmap, report]}
+    fps: 2
+
+  - id: mall.demographics
+    name: Demographics analytics for tenants
+    vertical: mall
+    models: [det.coco, cls.attr]
+    classes: [person]
+    custom_classes: []
+    rule: attribute(person, age_bucket+gender) counted per zone -> report(marketing)
+    uses: {spatial: [attribute, count], temporal: [rate], join: [], sink: [report, metric]}
+    fps: 2
+
+  - id: mall.parking-slots
+    name: Parking car counting + free-slot guidance
+    vertical: mall
+    models: [det.coco]
+    classes: [car]
+    custom_classes: []
+    rule: presence(car, zone:slot_*) -> metric(free_slots) -> signal(guidance_board)
+    uses: {spatial: [presence, count], temporal: [edge], join: [], sink: [metric, signal]}
+    fps: 0.2
+
+  - id: mall.parking-alpr
+    name: Ticketless parking / VIP auto-entry
+    vertical: mall
+    models: [det.coco, det.custom, ocr]
+    classes: [car]
+    custom_classes: [license_plate]
+    rule: identity(plate@gate) -> log(entry/exit, billing); matched(vip_list) -> signal(open_gate)
+    uses: {spatial: [identity, line_cross], temporal: [cooldown], join: [list_match], sink: [log, signal, report]}
+    fps: 5
+
+  - id: mall.lost-child
+    name: Lost-child alerts
+    vertical: mall
+    models: [det.coco, cls.attr]
+    classes: [person]
+    custom_classes: []
+    rule: attribute(person, child)==true AND NOT proximity(any adult) sustained>2m -> alert(security, location)
+    uses: {spatial: [attribute, proximity], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 5
+
+  - id: mall.escalator-fall
+    name: Escalator fall detection
+    vertical: mall
+    models: [det.coco, pose]
+    classes: [person]
+    custom_classes: []
+    rule: posture(person@zone:escalator, fallen) sustained>2s -> alert(emergency)
+    uses: {spatial: [posture, presence], temporal: [sustained, cooldown], join: [], sink: [alert, signal]}
+    fps: 10
+
+  - id: mall.crowd-density
+    name: Crowd-control during sales/Eid
+    vertical: mall
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: count(person, zone:*) > capacity sustained>1m -> alert(control_room) + metric
+    uses: {spatial: [count], temporal: [sustained, edge, rate], join: [], sink: [alert, metric]}
+    fps: 2
+
+  - id: mall.smoking
+    name: Smoking-in-prohibited-area enforcement
+    vertical: mall
+    models: [det.custom]
+    classes: [person]
+    custom_classes: [cigarette]
+    rule: presence(cigarette near person, zone:prohibited) -> alert(snapshot)
+    uses: {spatial: [presence, proximity], temporal: [cooldown], join: [], sink: [alert, log]}
+    fps: 3
+
+  - id: mall.abandoned-object
+    name: Abandoned bag/object detection
+    vertical: mall
+    models: [det.coco]
+    classes: [backpack, handbag, suitcase]
+    custom_classes: []
+    rule: stationary(bag) AND NOT proximity(owner person) sustained>3m -> alert(security_protocol)
+    uses: {spatial: [stationary, proximity], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 3
+
+  # ════════════════ 7. LOGISTICS, FLEET & FUEL ════════════════
+  - id: fuel.driveoff
+    name: Pump ALPR drive-off detection
+    vertical: logistics
+    models: [det.coco, det.custom, ocr]
+    classes: [car, truck]
+    custom_classes: [license_plate]
+    rule: identity(plate@zone:pump) departure without event_correlate(payment, window) -> alert(plate, snapshot)
+    uses: {spatial: [identity, line_cross], temporal: [sustained, cooldown], join: [event_correlate, list_match], sink: [alert, log]}
+    fps: 5
+
+  - id: fuel.attendant-presence
+    name: Attendant presence per pump (service SLA)
+    vertical: logistics
+    models: [det.coco]
+    classes: [person, car]
+    custom_classes: []
+    rule: presence(car, zone:pump) AND absence(person:attendant, zone:pump) sustained>1m -> alert
+    uses: {spatial: [presence, absence], temporal: [sustained, cooldown], join: [], sink: [alert, metric]}
+    fps: 2
+
+  - id: fuel.decanting-safety
+    name: Tanker decanting safety (no phone/smoking)
+    vertical: logistics
+    models: [det.coco, det.custom]
+    classes: [person, cell phone]
+    custom_classes: [cigarette]
+    rule: presence(cell_phone|cigarette, zone:decanting) during attribute(decanting_active) -> alert + signal(siren)
+    uses: {spatial: [presence, proximity, attribute], temporal: [cooldown, schedule], join: [], sink: [alert, signal, log]}
+    fps: 5
+
+  - id: fleet.yard-management
+    name: Trailer counting & dock-door occupancy
+    vertical: logistics
+    models: [det.coco]
+    classes: [truck]
+    custom_classes: [trailer]
+    rule: presence(trailer, zone:dock_*) + count(yard) -> metric(yard_map) + report
+    uses: {spatial: [presence, count, dwell], temporal: [edge, rate], join: [], sink: [metric, report]}
+    fps: 0.2
+
+  - id: fleet.driver-faceid
+    name: Driver face-ID at gate
+    vertical: logistics
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: identity(face@zone:gate) matched(authorized_drivers) for vehicle -> log + signal(gate); unmatched -> alert
+    uses: {spatial: [identity], temporal: [cooldown], join: [list_match, event_correlate], sink: [log, signal, alert]}
+    fps: 5
+
+  - id: fleet.cargo-tamper
+    name: Cargo tampering during loading
+    vertical: logistics
+    models: [det.custom]
+    classes: [person]
+    custom_classes: [open_cargo, broken_seal]
+    rule: presence(person, zone:cargo) outside schedule:loading_window OR presence(broken_seal) -> alert(snapshot)
+    uses: {spatial: [presence], temporal: [schedule, cooldown], join: [], sink: [alert, log]}
+    fps: 2
+
+  # ════════════════ 8. RESIDENTIAL & GATED COMMUNITIES ════════════════
+  - id: residential.gate-alpr
+    name: Society gate ALPR (resident auto-entry, visitor log)
+    vertical: residential
+    models: [det.coco, det.custom, ocr]
+    classes: [car]
+    custom_classes: [license_plate]
+    rule: identity(plate@gate) matched(resident_list) -> signal(open) + log; unmatched -> log(visitor) + alert(guard)
+    uses: {spatial: [identity, line_cross], temporal: [cooldown], join: [list_match], sink: [signal, log, alert]}
+    fps: 5
+
+  - id: residential.guard-patrol
+    name: Guard attendance + patrol verification
+    vertical: residential
+    models: [det.coco, face.embed]
+    classes: [person, face]
+    custom_classes: []
+    rule: identity(guard@zone:checkpoint_*) expected every schedule(hourly window); missed -> alert + report
+    uses: {spatial: [identity, presence], temporal: [schedule, rate], join: [list_match, roster_compare], sink: [alert, report, log]}
+    fps: 2
+
+  - id: residential.perimeter
+    name: Boundary-wall crossing intrusion
+    vertical: residential
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: line_cross(person, line:perimeter) [any time] -> alert(snapshot) + signal(siren)
+    uses: {spatial: [line_cross], temporal: [cooldown], join: [], sink: [alert, signal]}
+    fps: 8
+
+  - id: residential.night-loitering
+    name: Night loitering near houses
+    vertical: residential
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: dwell(person, zone:street) > 5m during schedule:night -> alert(suspicious, snapshot)
+    uses: {spatial: [dwell], temporal: [schedule, sustained, cooldown], join: [], sink: [alert]}
+    fps: 3
+
+  - id: residential.streetlight-outage
+    name: Street-light outage detection
+    vertical: residential
+    models: [cls.attr]
+    classes: []
+    custom_classes: [light_on_state]
+    rule: attribute(zone:light_*, lit)==false during schedule:night sustained>10m -> log(maintenance_ticket)
+    uses: {spatial: [attribute], temporal: [schedule, sustained], join: [], sink: [log, report]}
+    fps: 0.1
+
+  - id: residential.construction-theft
+    name: Construction-site material theft at night
+    vertical: residential
+    models: [det.coco]
+    classes: [person, truck]
+    custom_classes: [material_stack]
+    rule: presence(person|truck, zone:site) during schedule:night -> alert; vanish(material_stack) -> alert
+    uses: {spatial: [presence, vanish], temporal: [schedule, cooldown], join: [], sink: [alert, log]}
+    fps: 2
+
+  # ════════════════ 9. AGRICULTURE & LIVESTOCK ════════════════
+  - id: agri.cattle-id
+    name: Cattle counting + individual ID
+    vertical: agriculture
+    models: [det.custom, reid.embed]
+    classes: []
+    custom_classes: [cattle]
+    rule: count(cattle, zone:pen) + identity(coat/muzzle embed) -> metric(herd) + report; missing vs roster -> alert
+    uses: {spatial: [count, identity], temporal: [rate], join: [roster_compare], sink: [metric, report, alert]}
+    fps: 1
+
+  - id: agri.animal-down
+    name: Sick-animal / animal-down alerts
+    vertical: agriculture
+    models: [det.custom, pose]
+    classes: []
+    custom_classes: [cattle]
+    rule: posture(cattle, lying_abnormal) sustained>30m -> alert(vet, snapshot)
+    uses: {spatial: [posture], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 0.5
+
+  - id: agri.milking-throughput
+    name: Milking-parlor throughput
+    vertical: agriculture
+    models: [det.custom]
+    classes: []
+    custom_classes: [cattle]
+    rule: line_cross(cattle, line:parlor) rate per session -> metric + report
+    uses: {spatial: [line_cross, count], temporal: [rate, schedule], join: [], sink: [metric, report]}
+    fps: 3
+
+  - id: agri.poultry
+    name: Poultry dead-bird & heat-stress density
+    vertical: agriculture
+    models: [det.custom]
+    classes: []
+    custom_classes: [bird, dead_bird]
+    rule: presence(dead_bird) -> alert; count density per zone > threshold -> alert(heat_stress)
+    uses: {spatial: [presence, count], temporal: [sustained, cooldown], join: [], sink: [alert, metric]}
+    fps: 0.5
+
+  - id: agri.grain-store
+    name: Grain-storage pest + unauthorized access
+    vertical: agriculture
+    models: [det.custom, det.coco]
+    classes: [person]
+    custom_classes: [rodent]
+    rule: presence(rodent) during schedule:night -> alert; presence(person, zone:godown) unmatched hours -> alert
+    uses: {spatial: [presence], temporal: [schedule, cooldown], join: [], sink: [alert, log]}
+    fps: 2
+
+  - id: agri.equipment-tracking
+    name: Tractor/equipment tracking in fields
+    vertical: agriculture
+    models: [det.custom]
+    classes: [truck]
+    custom_classes: [tractor]
+    rule: presence(tractor, zone:field_*) + duration -> metric(usage) + report; outside allowed zone -> alert
+    uses: {spatial: [presence, dwell], temporal: [duration, rate], join: [], sink: [metric, report, alert]}
+    fps: 0.5
+
+  # ════════════════ 10. MOSQUES, EVENTS & PUBLIC VENUES ════════════════
+  - id: venue.crowd-flow
+    name: Crowd density & flow (Jummah, processions)
+    vertical: venue
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: count(person, zone:*) + line_cross(flow lines) -> metric(density, flow_rate); > threshold -> alert
+    uses: {spatial: [count, line_cross], temporal: [rate, sustained, edge], join: [], sink: [metric, alert, report]}
+    fps: 3
+
+  - id: venue.shoe-theft
+    name: Shoe-area theft monitoring
+    vertical: venue
+    models: [det.coco]
+    classes: [person]
+    custom_classes: [shoe_pair]
+    rule: vanish(shoe_pair, zone:shoe_area) with proximity(non-owner person) -> alert(snapshot)
+    uses: {spatial: [vanish, proximity, presence], temporal: [cooldown], join: [], sink: [alert]}
+    fps: 5
+
+  - id: venue.abandoned-object
+    name: Abandoned-object detection
+    vertical: venue
+    models: [det.coco]
+    classes: [backpack, handbag, suitcase]
+    custom_classes: []
+    rule: stationary(bag) AND NOT proximity(owner) sustained>3m -> alert(security)
+    uses: {spatial: [stationary, proximity], temporal: [sustained, cooldown], join: [], sink: [alert]}
+    fps: 3
+
+  - id: venue.headcount-billing
+    name: Event headcount for billing/capacity
+    vertical: venue
+    models: [det.coco]
+    classes: [person]
+    custom_classes: []
+    rule: line_cross(person, line:entrance, in|out) net count -> metric + report(billing); > capacity -> alert
+    uses: {spatial: [line_cross, count], temporal: [rate, edge], join: [], sink: [metric, report, alert]}
+    fps: 8

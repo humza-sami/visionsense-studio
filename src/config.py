@@ -39,6 +39,7 @@ class PipelineConfig:
 class CaptureConfig:
     backend: str = "auto"
     rtsp_transport: str = "tcp"
+    codec: str = "h264"          # h264 | h265 — picks nvh264dec / nvh265dec for NVDEC
     reconnect_backoff_s: float = 2.0
     read_fail_limit: int = 30
 
@@ -84,6 +85,12 @@ def _env_override(settings: Settings) -> None:
     """Allow a few high-value overrides via env vars (handy in Docker)."""
     if v := os.getenv("MODEL_WEIGHTS"):
         settings.model.weights = v
+    if v := os.getenv("MODEL_ENGINE"):
+        settings.model.engine = v
+    if v := os.getenv("MODEL_IMGSZ"):
+        settings.model.imgsz = int(v)
+    if v := os.getenv("MODEL_MAX_BATCH"):
+        settings.model.max_batch = int(v)
     if v := os.getenv("MODEL_DEVICE"):
         settings.model.device = v
     if v := os.getenv("REDIS_ENABLED"):

@@ -9,6 +9,7 @@ Embeds Ultralytics-compatible metadata so `YOLO("....engine")` loads it unchange
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 import time
 
@@ -19,8 +20,10 @@ def main() -> int:
     onnx_path = sys.argv[1] if len(sys.argv) > 1 else "models/yolo26n.onnx"
     imgsz = int(sys.argv[2]) if len(sys.argv) > 2 else 640
     max_b = int(sys.argv[3]) if len(sys.argv) > 3 else 15
-    opt_b = max(1, min(8, max_b))
+    opt_b = max(1, min(16, max_b))   # optimize for mid-batch; supports 1..max_b
     engine_path = onnx_path.replace(".onnx", ".engine")
+    model_name = Path(onnx_path).stem
+    weights_path = str(Path(onnx_path).with_suffix(".pt"))
 
     logger = trt.Logger(trt.Logger.WARNING)
     builder = trt.Builder(logger)
@@ -70,11 +73,16 @@ def main() -> int:
 
     # Ultralytics metadata header: 4-byte little-endian length + JSON, then engine.
     from ultralytics import YOLO
-    names = YOLO("models/yolo26n.pt").names
+    names = YOLO(weights_path if Path(weights_path).exists() else "models/yolo26n.pt").names
+    try:
+        import ultralytics
+        version = ultralytics.__version__
+    except Exception:
+        version = "unknown"
     meta = {
-        "description": "Ultralytics YOLO26n",
+        "description": f"Ultralytics {model_name}",
         "author": "Ultralytics",
-        "version": "8.4.83",
+        "version": version,
         "stride": 32,
         "task": "detect",
         "batch": max_b,

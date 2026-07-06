@@ -1,5 +1,8 @@
 # VisionSense Studio — Multi-Camera CCTV Detection Backend
 
+> **Start here:** [OVERVIEW.md](OVERVIEW.md) — what we're building, our services,
+> roadmap, and all testing results & analysis in one place. This README covers the code.
+
 Decoupled producer–consumer pipeline for running YOLO across many RTSP cameras on a
 single GPU. Built per [PLAN.md](PLAN.md). **Dev on macOS, deploy on Ubuntu/NVIDIA**
 with no code changes — only two adapters and the model artifact swap.
