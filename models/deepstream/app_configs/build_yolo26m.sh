@@ -1,0 +1,1 @@
+trtexec --onnx=/models/yolo26m/yolo26m.onnx --saveEngine=/models/yolo26m/yolo26m.onnx_b32_gpu0_fp16.engine --fp16 --minShapes=images:1x3x640x640 --optShapes=images:32x3x640x640 --maxShapes=images:32x3x640x640 --memPoolSize=workspace:2048 && echo ENGINE_BUILD_OK

@@ -223,7 +223,12 @@ Postgres; audit log on every control-plane action.
 | **1 — Productize the edge** | 1–4 | Extract `sync-agent` (Redis→SQLite→HTTPS), Compose packaging, Tailscale on the box, site-as-code repo layout, rule kernels v1 (`zone_state` + WhatsApp sink — covers 72% of catalog) |
 | **2 — Minimum sellable cloud** | 5–10 | ingest-api + Timescale + R2, Next.js dashboard v1 (live wall, alerts, footfall), WhatsApp Business API, manual invoicing. **First subscription revenue.** |
 | **3 — Fleet at scale** | 11–16 | Go edge-agent (signed OTA + rollback + watchdog), VictoriaMetrics+Grafana fleet screen, staged channels, remaining kernels |
-| **4 — Growth features** | 17+ | Multi-branch HQ, app marketplace flips, model-pack OTA, billing automation, MQTT live tiles, DeepStream evaluation for 100-cam single-box sites |
+| **4 — Growth features** | 17+ | Multi-branch HQ, app marketplace flips, model-pack OTA, billing automation, MQTT live tiles |
+
+**Parallel track — DeepStream spike (2 weeks, start now):** promoted out of phase 4 after
+deeper analysis — it attacks all three measured walls (VRAM/cam, host CPU, scheduler) at
+once and could ~3× cameras-per-box on identical hardware. Plan and go/no-go gate:
+[deepstream-evaluation.md](deepstream-evaluation.md).
 
 **Rule for every phase:** the demo box in our office runs the exact stack a client gets —
 we are client #0 of our own fleet.

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "deepstream-inference-builder": {
+      "command": "/home/humza/Personal/inference_builder/.venv/bin/python",
+      "args": [
+        "/home/humza/Personal/inference_builder/mcp/mcp_server.py"
+      ],
+      "cwd": "/home/humza/Personal/inference_builder",
+      "env": {
+        "PYTHONPATH": "/home/humza/Personal/inference_builder/mcp"
+      }
+    }
+  }
+}

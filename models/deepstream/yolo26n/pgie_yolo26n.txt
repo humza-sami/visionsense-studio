@@ -1,0 +1,26 @@
+# nvinfer PGIE config — YOLO26n end-to-end (NMS-free) for the DeepStream benchmark.
+# Preprocessing matches Ultralytics training: 1/255 scale, RGB, centered letterbox.
+[property]
+gpu-id=0
+net-scale-factor=0.0039215686274509803
+model-color-format=0
+onnx-file=/models/yolo26n/yolo26n.onnx
+model-engine-file=/models/yolo26n/yolo26n.onnx_b32_gpu0_fp16.engine
+labelfile-path=/models/yolo26n/labels.txt
+batch-size=32
+network-mode=2
+network-type=0
+num-detected-classes=80
+infer-dims=3;640;640
+maintain-aspect-ratio=1
+symmetric-padding=1
+# model outputs final detections — no clustering
+cluster-mode=4
+gie-unique-id=1
+parse-bbox-func-name=NvDsInferParseYolo26
+custom-lib-path=/models/parser/libnvdsparser_yolo26.so
+# detection every 12th batch => ~2 fps per stream at 25 fps input (set per run by harness)
+interval=11
+
+[class-attrs-all]
+pre-cluster-threshold=0.25
