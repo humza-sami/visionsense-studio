@@ -197,6 +197,58 @@ You have two ways to run a DeepStream pipeline *with your probe*:
    same pipeline in code and `add_probe(...)` your rules. **This is where apps live.** The
    Inference Builder MCP can generate the skeleton of this program for you.
 
+### 4.4 Running different models on different cameras (mixed models)
+
+Common need: "10 cameras on YOLO-xlarge (critical), 20 on YOLO-small (cheap)." A single
+`nvinfer` (PGIE) applies **one** model to **every** camera flowing through it — the
+`[primary-gie]` block in a config points to one engine. So **one plain config file cannot
+split models per camera.** Think of `nvinfer` as one AI inspection station on the belt;
+everything on that belt gets the same model. There are two ways to get mixed models:
+
+**Option A — Two pipelines (simple, recommended).** Run two `deepstream-app` instances,
+each with its own config, on the **same GPU** — they share VRAM, decoder, and compute
+automatically:
+
+```
+Pipeline 1:  pgie_yolo26x.txt  → 10 cameras → YOLO-xlarge   ┐  one GPU,
+Pipeline 2:  pgie_yolo26s.txt  → 20 cameras → YOLO-small    ┘  two processes
+```
+
+This is the standard pattern for heterogeneous camera groups, not a workaround. It is
+**validated on our hardware**: the mixed benchmark ran two containers (xlarge×15 +
+small×25 = 40 cams) sharing one RTX 3070 Ti at full 30 fps, 14 % GPU, 65 % NVDEC, 4.3 GB
+(see [`deepstream-benchmark-report.md`](deepstream-benchmark-report.md)). Two assembly
+lines, one factory floor.
+
+**Option B — One pipeline with parallel inference (advanced).** DeepStream can do it in a
+single process by splitting the stream into per-model branches and merging the metadata
+back:
+
+```
+cameras → nvstreammux → nvstreamdemux ─┬─→ nvinfer(xlarge) ─┐
+                                       └─→ nvinfer(small)  ─┴─→ nvdsmetamux → tracker → out
+```
+
+This is NVIDIA's `deepstream-parallel-inference-app` pattern. It **cannot** be expressed in
+the plain `deepstream-app` text config — you build the pipeline in code (Python
+`pyservicemaker` or C++), which the Inference Builder MCP can scaffold.
+
+| | Option A — two pipelines | Option B — parallel inference |
+|---|---|---|
+| Config | two text files | custom code (pyservicemaker / C++) |
+| Effort | minutes | days |
+| Runs on one GPU | ✅ | ✅ |
+| Proven on our box | ✅ (15×x + 25×s run) | not yet |
+| Use when | **almost always** | one unified process per box, or shared-batch overhead matters at huge scale |
+
+**Recommendation:** use **Option A** unless you have a specific reason for one process. The
+GPU is the same shared pool either way, and two configs are far simpler to run, quote, and
+debug.
+
+> **Not the same thing:** a **Secondary GIE (SGIE)** runs a *second model on the output of
+> the first* (detect car → classify its colour) — chaining models on the same objects, not
+> different models on different cameras. Don't reach for SGIE to solve mixed-camera-groups.
+
 ---
 
 ## 5. Best language / stack for efficiency
