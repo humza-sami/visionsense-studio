@@ -1,129 +1,80 @@
-# VisionSense Studio — Multi-Camera CCTV Detection Backend
+# VisionSense — DeepStream YOLO26
 
-> **Start here:** [OVERVIEW.md](OVERVIEW.md) — what we're building, our services,
-> roadmap, and all testing results & analysis in one place. This README covers the code.
-
-Decoupled producer–consumer pipeline for running YOLO across many RTSP cameras on a
-single GPU. Built per [PLAN.md](PLAN.md). **Dev on macOS, deploy on Ubuntu/NVIDIA**
-with no code changes — only two adapters and the model artifact swap.
-
-```
-capture threads → latest-frame buffer → motion gate → batch builder →
-ONE batched inference → per-camera ByteTrack → business logic → events + live preview
-```
-
-## The macOS ↔ Ubuntu seam
-
-Everything is identical on both OSes except two pluggable layers, chosen
-automatically at runtime:
-
-| Layer | macOS dev | Ubuntu prod |
-|---|---|---|
-| **Compute** ([src/inference/engine.py](src/inference/engine.py)) | `.pt` on CPU/MPS | TensorRT `.engine` on CUDA FP16 |
-| **Decode** ([src/capture/capture_source.py](src/capture/capture_source.py)) | `cv2` FFmpeg/webcam | GStreamer NVDEC (or PyNvVideoCodec) |
-| GPU telemetry ([metrics.py](src/monitoring/metrics.py)) | unavailable (graceful) | `pynvml` |
-
-`model.device: auto` resolves `cuda > mps > cpu`. If a CUDA device is present and
-`models/*.engine` exists, the engine is loaded; otherwise the `.pt` is used.
-
-## Run on macOS (today)
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python -m src.main
-```
-
-Open **http://localhost:8000/** for the live detection grid. `config/cameras.yaml`
-ships with `cam01` = your webcam so the whole pipeline runs locally. The first run
-downloads the YOLO weights.
-
-> **Model name:** the plan targets **YOLO26** (`models/yolo26n.pt`). If that weight
-> isn't fetchable from your Ultralytics version yet, set `model.weights` in
-> `config/settings.yaml` (or `MODEL_WEIGHTS` env) to a shipping model such as
-> `yolo11n.pt` — it's just a string the loader passes to Ultralytics.
-
-## Run on Ubuntu / RTX (the production box)
-
-This box ships with a system Python that's often too new for the ML stack and may
-have **no `pip`**. Use [`uv`](https://docs.astral.sh/uv/) to provision a known-good
-Python 3.12 + all deps in userspace — **no sudo needed** for the CPU/dev path:
-
-```bash
-# 0. Userspace toolchain (no sudo):
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python torch torchvision --index-url https://download.pytorch.org/whl/cpu
-uv pip install --python .venv/bin/python -r requirements.txt
-
-# 1. Smoke-test the whole pipeline with NO camera/GPU (synthetic people clip):
-.venv/bin/python scripts/make_test_video.py     # writes test_assets/people.mp4
-.venv/bin/python scripts/smoke_test.py          # asserts detect→track→event works
-
-# 2. GPU path (needs sudo for driver/CUDA/redis — idempotent, re-run after reboot):
-bash scripts/setup_gpu.sh
-#   → installs NVIDIA driver, CUDA torch, TensorRT, redis, and BUILDS the .engine.
-
-# 3. Point real cameras at the SUBSTREAM, set enabled:true in config/cameras.yaml,
-#    then run (engine is auto-selected once CUDA is available):
-.venv/bin/python -m src.main          # open http://<server-ip>:8000/
-# or containerised:
-docker compose -f docker/docker-compose.yml up --build
-```
-
-Benchmark the box: `.venv/bin/python scripts/benchmark.py 15 50` (target: ~8–12 FPS/cam @ 15).
-
-> The TensorRT `.engine` is built **for this exact GPU + driver** by
-> `scripts/setup_gpu.sh` (or `scripts/export_model.py`). It loads automatically
-> once `model.device` resolves to `cuda:0` and `models/yolo26n.engine` exists;
-> until then the `.pt` runs on CPU so the system is always functional.
-
-### Prod decode note (important)
-The pip `opencv-python` wheel is **not built with GStreamer**, so the NVDEC
-GStreamer path won't activate from a pip install — capture falls back to FFmpeg
-(CPU decode). For true GPU decode on the server, either install GStreamer + an
-OpenCV build with GStreamer support, or wire the `pynvc` backend
-(PyNvVideoCodec) in [capture_source.py](src/capture/capture_source.py) (stub
-marked there). The pipeline runs correctly either way; only decode placement
-(CPU vs NVDEC) differs.
-
-## API
-
-| Endpoint | What |
-|---|---|
-| `GET /` | Live MJPEG grid dashboard |
-| `GET /stream/{cam_id}` | Annotated MJPEG for one camera |
-| `GET /status` | Per-cam FPS, loop FPS, GPU/VRAM, worker health |
-| `GET /events?limit=100` | Recent business-logic events |
-| `GET /health` | Liveness |
-
-## Config
-
-- [config/settings.yaml](config/settings.yaml) — model, pipeline, capture, API, redis.
-- [config/cameras.yaml](config/cameras.yaml) — per-camera URL, `det_interval`,
-  `motion_gate`, `logic`, `zones_file`, `enabled`.
-- [config/zones/](config/zones/) — per-camera ROI polygons (see `cam02.json`).
+Multi-camera CCTV analytics on NVIDIA DeepStream. Decode → YOLO26 inference → tracking,
+all GPU-resident (zero-copy), so one mid-range GPU runs far more cameras than a Python
+pipeline: **50 real 720p cameras through YOLO26-xlarge at 30 fps** on an RTX 3070 Ti 8 GB.
+The bottleneck is the video **decoder** (NVDEC), not the AI.
 
 ## Layout
 
 ```
-src/
-  capture/    capture_source (OS seam), frame_buffer (drop-old), rtsp_worker (thread+reconnect)
-  inference/  engine (Detector, OS seam), batch_builder, preprocess (ROI crop)
-  motion/     motion_gate (MOG2)
-  tracking/   tracker (per-camera ByteTrack via supervision)
-  logic/      headcount, desk_activity, theft  (+ registry)
-  events/     publisher (redis + in-memory ring), schemas
-  monitoring/ metrics (pynvml + FPS)
-  zones.py viz.py types.py config.py pipeline.py api.py main.py
-scripts/      setup_gpu.sh (driver/CUDA/TensorRT/redis/engine bootstrap),
-              export_model.py (→ TensorRT), benchmark.py,
-              make_test_video.py + smoke_test.py (headless end-to-end check)
-docker/       Dockerfile, docker-compose.yml
+models/deepstream/          production inference path
+  parser/nvdsinfer_yolo26.cpp   custom NMS-free bbox parser (YOLO26 → boxes)
+  app_configs/pgie_yolo26*.txt  nvinfer config per model size (FP16, 640)
+  app_configs/live_x50.txt      50-camera tiled live-demo pipeline
+  labels.txt                    80 COCO classes
+  README.md                     build + run instructions
+  yolo26{n,s,m,l,x}/            ONNX + TensorRT engines (git-ignored)
+
+scripts/
+  benchmark_deepstream.py       per-model camera ladder (synthetic + real NVR), crash-safe
+  benchmark_nvr_ceiling.py      rich-metric ceiling test (latency, drops, NIC, bottleneck)
+  run_live_x50.sh               launch the 50-camera live demo
+  start_multipath_relay.sh      12-publisher loopback RTSP relay for pure-server tests
+  export_model.py               Ultralytics → ONNX
+  build_engine_from_onnx.py     ONNX → TensorRT engine
+  setup_gpu.sh / gpu_resume.sh  host GPU/driver setup
+
+deploy/
+  mediamtx.yml, mediamtx_multi.yml   RTSP relay configs (benchmarks)
+  live_demo/                          browser demo pages
+
+docs/
+  deepstream-benchmark-report.md   test plan, results, NVDEC root-cause analysis
+  deepstream-evaluation.md         why DeepStream (vs the old Python stack)
+  builder-spec.md                  the 10 rule kernels for apps built on the metadata
+
+frameinsight_estimator.html    server-spec calculator (decode/compute/VRAM), DeepStream-calibrated
+artifacts/benchmarks/          measured result CSVs
 ```
 
-## What's stubbed / deferred
-- **PyNvVideoCodec** zero-copy NVDEC path (returns GPU tensors) — marked TODO; FFmpeg/GStreamer used instead.
-- **ByteTrack gap-filling**: between detection frames the last tracks are reused for display (IDs persist via the tracker on detection frames).
-- INT8 calibration, DeepStream/Triton — out of scope per plan (revisit at 30+ cams/box).
+## Quick start
+
+Prerequisites: NVIDIA driver 590+, Docker + NVIDIA Container Toolkit, the DeepStream 9.0
+container (`nvcr.io/nvidia/deepstream:9.0-triton-multiarch`), and ONNX weights under
+`models/deepstream/yolo26<size>/`.
+
+```bash
+# 1. export weights → ONNX (once)
+python scripts/export_model.py            # or bring your own yolo26*.onnx
+
+# 2. build the parser + a TensorRT engine  (see models/deepstream/README.md)
+
+# 3. point the benchmark at a real NVR and run
+export NVR_TMPL='rtsp://USER:PASS@NVR_HOST:554/cam/realmonitor?channel={ch}&subtype=1'
+NVR=1 python scripts/benchmark_deepstream.py all 90
+
+# 4. live 50-camera demo
+bash scripts/run_live_x50.sh
+```
+
+Full build/run detail: [models/deepstream/README.md](models/deepstream/README.md).
+
+## Key measured facts (RTX 3070 Ti 8 GB · 720p H.264 · FP16 · ~2.5 fps detection)
+
+- **NVDEC decoder is the wall** — ~64× 720p30 streams saturate one Ampere decoder
+  (~1.8 Gpx/s). Lower-resolution substreams (704×576) roughly double camera capacity.
+- **Compute rarely binds** at alert-grade fps: 15×xlarge + 25×small = 40 cams ran full
+  30 fps at 14 % GPU, 65 % NVDEC, 4.3 GB VRAM.
+- **VRAM** — ~1.5 GB base + FP16 engine per distinct model + ~30 MB/camera at 720p.
+
+These anchors calibrate [frameinsight_estimator.html](frameinsight_estimator.html).
+
+## Building apps on top
+
+The pipeline emits per-frame metadata (class, box, confidence, persistent track ID) via a
+pad probe. Apps like dwell-time-on-chair or phone-usage duration are small rule functions
+on that stream — detection runs once, rules are cheap. See the 10 kernels in
+[docs/builder-spec.md](docs/builder-spec.md).
+
+> **Note.** Camera credentials are read from the `NVR_TMPL` env var — never hardcode them.

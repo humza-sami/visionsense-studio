@@ -63,7 +63,7 @@ docker run --rm --gpus all -v $PWD/models/deepstream:/models \
   30 fps at **14 % GPU**, 65 % NVDEC, 4.3 GB VRAM.
 - **VRAM:** ~1.5 GB base + FP16 engine per distinct model + ~30 MB/camera at 720p.
 
-These anchors calibrate [`server_calculator.html`](../../server_calculator.html).
+These anchors calibrate [`frameinsight_estimator.html`](../../frameinsight_estimator.html).
 
 ## Building applications on top
 
