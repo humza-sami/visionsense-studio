@@ -1,0 +1,37 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>VisionSense — YOLO26-xlarge · 50 cameras live</title>
+<style>
+  :root{--bg:#0b0e13;--fg:#e8ecf3;--mut:#8a93a3;--acc:#3987e5;--good:#4fc24f}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+  header{padding:16px 22px;border-bottom:1px solid #1c2230;display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
+  h1{font-size:18px;margin:0}
+  .badge{font-size:12px;color:var(--good);border:1px solid #234b23;background:#0f1f0f;border-radius:999px;padding:3px 10px}
+  .mut{color:var(--mut);font-size:13px}
+  .wrap{max-width:1600px;margin:0 auto;padding:18px 22px 60px}
+  video{width:100%;border-radius:12px;border:1px solid #1c2230;background:#000;display:block}
+  .row{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px}
+  .tile{background:#121722;border:1px solid #1c2230;border-radius:10px;padding:12px 15px;flex:1;min-width:150px}
+  .tile .l{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+  .tile .v{font-size:22px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums}
+  .note{margin-top:16px;font-size:13px;color:var(--mut);border-left:3px solid var(--acc);padding:8px 14px;background:#101722;border-radius:0 10px 10px 0;max-width:900px}
+</style></head><body>
+<header>
+  <h1>VisionSense — live detection</h1>
+  <span class="badge">● YOLO26-xlarge</span>
+  <span class="mut">50 camera streams · red boxes = detected objects · RTX 3070 Ti (8 GB)</span>
+</header>
+<div class="wrap">
+  <video src="mosaic50.mp4" autoplay muted loop playsinline controls></video>
+  <div class="row">
+    <div class="tile"><div class="l">Model</div><div class="v">YOLO26-x</div></div>
+    <div class="tile"><div class="l">Streams</div><div class="v">50</div></div>
+    <div class="tile"><div class="l">Resolution</div><div class="v">720p</div></div>
+    <div class="tile"><div class="l">Detector</div><div class="v">TensorRT FP16</div></div>
+  </div>
+  <p class="note">Real YOLO26-xlarge inference on 50 concurrent 720p streams via NVIDIA DeepStream.
+  Red boxes are live detections drawn by the model's custom parser + tracker. All 50 tiles show the
+  same source clip (the test NVR exposes one active camera across its channels); on a real site each
+  tile is a different scene.</p>
+</div></body></html>

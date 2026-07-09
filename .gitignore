@@ -53,3 +53,14 @@ snapshots/
 test_assets/
 *.mp4
 *.avi
+
+# DeepStream build artifacts
+*.so
+models/deepstream/*/*.engine
+deploy/live_demo/*.mp4
+
+# TLS (never commit private keys)
+auto.key
+auto.crt
+*.key
+*.pem

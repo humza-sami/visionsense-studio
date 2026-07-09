@@ -1,5 +1,0 @@
-scenario,total_cameras,groups,gpu_util_avg,gpu_util_peak,nvdec_util_avg,vram_used_MB_peak,vram_free_MB,cpu_util_avg,ram_used_MB,predicted_infer_ms_per_s,notes
-scale_n28_2fps,28,"[{""label"": ""nano2fps"", ""model"": ""yolo26n"", ""cams"": 28, ""target_fps"": 2.0, ""achieved_fps"": 1.86, ""avg_batch"": 28}]",20.6,43.0,12.2,6651.0,1541,42.2,8824,207,
-scale_n32_2fps,32,"[{""label"": ""nano2fps"", ""model"": ""yolo26n"", ""cams"": 32, ""target_fps"": 2.0, ""achieved_fps"": 1.8, ""avg_batch"": 32}]",22.9,39.0,15.9,7368.0,824,44.6,9147,237,
-scale_n36_2fps,36,"[('nano2fps', 36, 'n', 25, 2.0)]",0,0,0,0,0,0,0,0,FAILED: AttributeError: 'NoneType' object has no attribute 'set_input_shape'
-scale_n40_2fps,40,"[('nano2fps', 40, 'n', 25, 2.0)]",0,0,0,0,0,0,0,0,FAILED: AttributeError: 'NoneType' object has no attribute 'create_execution_context'

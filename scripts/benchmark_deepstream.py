@@ -55,11 +55,11 @@ MODELS = {
 
 # ── Real NVR mode (env NVR=1): 50 live Dahua channels, 1280x720 H.264 ──────────
 USE_NVR = os.environ.get("NVR") == "1"
-NVR_TMPL = ("rtsp://test:welcome%40123@192.168.21.171:554/cam/realmonitor"
-            "?channel={ch}&subtype=1")
+NVR_TMPL = os.environ.get("NVR_TMPL",
+    "rtsp://USER:PASS@NVR_HOST:554/cam/realmonitor?channel={ch}&subtype=1")
 NVR_CHANNELS = 50
 NVR_W, NVR_H = 1280, 720
-NVR_LADDER = [8, 16, 32, 50, 64]
+NVR_LADDER = [8, 16, 32, 50, 64, 80, 96, 112, 128, 150]
 if USE_NVR:
     for m in MODELS:
         MODELS[m]["ladder"] = NVR_LADDER
