@@ -17,11 +17,11 @@ Real deployment. One Dahua NVR with **16 × 4MP (2560×1440) HEVC mainstreams @
 - Compute: measured 3 cams × 5 det/s xlarge = 22% GPU → 16 cams ≈ **80–100%**.
   Workable but tight; if on-site soak shows saturation, drop to `detect_fps: 4`
   or `model: yolo26l` (both one-line changes).
-- **Measured limit today (off-site testing): the NVR's internet uplink.** One
+- **Measured limit during off-site testing: the NVR's internet uplink.** One
   4MP mainstream ≈ 6 Mbps; the uplink delivers ~20 Mbps → only ~3 full-res
-  cameras over WAN. That's why site.yaml currently runs cam01–03 with the
-  cam04–16 rules commented out — **on-site (LAN) restore both lists**. If
-  streams ever starve again, suspect the network before the server.
+  cameras over WAN. The checked-in site config is now restored for the on-site
+  LAN path with all 16 cameras enabled. If streams starve again from off-site,
+  suspect the network before the server.
 
 ## Setup / operate
 
