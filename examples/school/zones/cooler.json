@@ -1,0 +1,15 @@
+{
+  "reference": {
+    "width": 1280,
+    "height": 720,
+    "snapshot": "cooler_ref.jpg",
+    "note": "Polygon around the floor area in front of the water cooler, tested against each kid's feet (bottom-center of the box)."
+  },
+  "zones": [
+    {
+      "name": "cooler_area",
+      "type": "polygon",
+      "points": [[0.35, 0.40], [0.68, 0.40], [0.72, 0.78], [0.30, 0.78]]
+    }
+  ]
+}

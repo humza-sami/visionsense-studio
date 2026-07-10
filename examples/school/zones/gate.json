@@ -1,0 +1,15 @@
+{
+  "reference": {
+    "width": 1280,
+    "height": 720,
+    "snapshot": "gate_ref.jpg",
+    "note": "Line drawn across the gate opening on the 2026-07 reference frame. Directed left->right, so walking DOWN in the image (into the school yard) crosses to the left side = 'enter'."
+  },
+  "zones": [
+    {
+      "name": "entry_line",
+      "type": "line",
+      "points": [[0.15, 0.55], [0.85, 0.55]]
+    }
+  ]
+}

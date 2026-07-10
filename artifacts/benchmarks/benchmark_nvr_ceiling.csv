@@ -1,9 +1,0 @@
-model,camera_count,min_fps,avg_fps,p50_fps,p95_latency_ms,gpu_util,gpu_util_peak,nvdec_util,vram_used_gb,cpu_util,dropped_frames,read_errors,urls_repeated,net_rx_mbps_avg,net_rx_mbps_peak,det_interval,streams_alive,drop_severity,bottleneck,notes
-yolo26n,64,20.53,22.42,22.43,565.8,7.6,30.0,44.4,4.07,30.7,29112,24,0,82.3,97.1,11,64,major FPS drop,RTSP/source starvation,
-yolo26s,64,23.97,25.03,25.09,384.4,7.3,53.0,47.2,4.34,27.0,35590,22,0,82.3,98.7,11,53,major FPS drop,RTSP/source starvation,
-yolo26m,64,19.73,20.85,20.97,525.9,13.7,91.0,39.4,4.89,29.6,35150,24,0,82.3,97.5,11,64,major FPS drop,RTSP/source starvation,
-yolo26l,50,29.97,30.17,30.17,361.0,9.6,95.0,45.6,3.71,21.7,0,18,0,64.7,74.4,11,50,slight FPS drop,RTSP/source starvation,
-yolo26l,64,23.43,24.49,24.6,411.8,19.2,100.0,44.1,4.27,25.7,21148,22,0,82.5,100.8,11,64,major FPS drop,RTSP/source starvation,
-yolo26x,32,30.03,30.05,30.06,251.4,29.8,83.0,42.4,3.47,19.1,0,12,0,41.4,49.0,11,32,slight FPS drop,RTSP/source starvation,
-yolo26x,50,29.8,30.11,30.11,379.6,27.1,100.0,49.9,3.9,20.1,0,18,0,44.0,73.6,11,50,slight FPS drop,RTSP/source starvation,
-yolo26x,64,21.54,22.24,22.31,714.6,29.2,100.0,40.9,4.44,24.4,29808,24,0,51.8,87.0,11,64,major FPS drop,RTSP/source starvation,

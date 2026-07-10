@@ -1,0 +1,113 @@
+# ── FrameInsight site config: Greenfield School ─────────────────────────────
+# 7 RTSP cameras on one NVR, three applications:
+#   gate     → count kids entering / exiting the school gate
+#   cooler   → how many kids around the water cooler + average stay time
+#   class1-5 → per-classroom headcount
+#
+# Credentials NEVER live in this file. Set the NVR URL template in the env:
+#   export SCHOOL_NVR_TMPL='rtsp://USER:PASS@NVR_HOST:554/cam/realmonitor?channel={ch}&subtype=1'
+
+site: greenfield-school
+models_dir: /models                 # models/deepstream mounted here in the container
+streammux: {width: 1280, height: 720}
+url_template: ${SCHOOL_NVR_TMPL}    # {ch} is replaced by each camera's channel
+
+cameras:
+  gate:   {channel: 1, fps: 30}
+  cooler: {channel: 2, fps: 30}
+  class1: {channel: 3, fps: 30}
+  class2: {channel: 4, fps: 30}
+  class3: {channel: 5, fps: 30}
+  class4: {channel: 6, fps: 30}
+  class5: {channel: 7, fps: 30}
+
+# One DeepStream pipeline per group. Gate + cooler need fast reactions
+# (10 det/s); classroom headcounts are slow-moving, 1 det/s is plenty and
+# leaves the GPU almost idle (nvinfer interval skips whole batches, so a
+# per-camera rate REQUIRES separate groups — this is the supported mechanism).
+groups:
+  - name: entrances
+    model: yolo26s
+    detect_fps: 10
+    tracker: NvDCF          # kids occlude each other at the gate; NvDCF holds IDs better
+    cameras: [gate, cooler]
+
+  - name: classrooms
+    model: yolo26m          # denser scenes, better small-object recall
+    detect_fps: 1
+    tracker: NvSORT
+    cameras: [class1, class2, class3, class4, class5]
+
+rules:
+  # ① Gate entry/exit counting. The line in zones/gate.json is drawn left→right
+  #   across the gate; walking DOWN in the image (into the school) crosses to
+  #   the line's left side → "enter".
+  - name: gate_counter
+    camera: gate
+    kernel: line_crossing
+    zone: zones/gate.json#entry_line
+    params:
+      classes: [person]     # COCO has no "child" class; person covers everyone.
+      min_conf: 0.5
+      label_left: enter
+      label_right: exit
+      recross_cooldown_s: 2.0
+      summary_every_s: 60   # totals every minute → dashboard counters
+
+  # ② Water-cooler dwell: per-kid stay time + live occupancy + running average.
+  - name: cooler_dwell
+    camera: cooler
+    kernel: zone_dwell
+    zone: zones/cooler.json#cooler_area
+    params:
+      classes: [person]
+      min_conf: 0.5
+      sustain_s: 2.0        # must be in the area 2s before a visit starts
+      min_dwell_s: 4.0      # walking past the cooler is not a visit
+      exit_grace_s: 2.0     # short occlusions don't split one visit into two
+      summary_every_s: 60   # occupancy + avg_dwell_s every minute
+
+  # Custom kernel from apps/cooler_crowding.py — too many kids at the cooler.
+  - name: cooler_crowd_alert
+    camera: cooler
+    kernel: cooler_crowding
+    zone: zones/cooler.json#cooler_area
+    params: {classes: [person], min_conf: 0.5, max_people: 4, sustain_s: 10, cooldown_s: 300}
+
+  # ③ Classroom headcounts every 30 s (median-smoothed so detector flicker
+  #   can't move the number). class1 counts inside a drawn room polygon
+  #   (excludes the corridor visible through the door); the rest count the
+  #   whole frame — both styles shown on purpose.
+  - name: class1_headcount
+    camera: class1
+    kernel: headcount
+    zone: zones/class1.json#room
+    params: &headcount_params
+      classes: [person]
+      min_conf: 0.4         # lower floor: seated kids are partially occluded
+      report_every_s: 30
+      window_s: 20
+  - name: class2_headcount
+    camera: class2
+    kernel: headcount
+    params: *headcount_params
+  - name: class3_headcount
+    camera: class3
+    kernel: headcount
+    params: *headcount_params
+  - name: class4_headcount
+    camera: class4
+    kernel: headcount
+    params: *headcount_params
+  - name: class5_headcount
+    camera: class5
+    kernel: headcount
+    params: *headcount_params
+
+sinks:
+  - {type: console}                          # watch live: docker logs -f
+  - {type: jsonl,  path: events/school.jsonl}  # crash-safe local source of truth
+  - {type: sqlite, path: events/school.db}     # queryable: on-site dashboard reads this
+  # Uncomment when the school's Supabase project exists:
+  # - {type: supabase, table: events, url_env: SUPABASE_URL,
+  #    key_env: SUPABASE_SERVICE_KEY, batch: 50, flush_s: 5}

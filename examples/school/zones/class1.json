@@ -1,0 +1,15 @@
+{
+  "reference": {
+    "width": 1280,
+    "height": 720,
+    "snapshot": "class1_ref.jpg",
+    "note": "Room polygon excludes the corridor visible through the open door (right edge), so passers-by are not counted as students."
+  },
+  "zones": [
+    {
+      "name": "room",
+      "type": "polygon",
+      "points": [[0.02, 0.25], [0.88, 0.25], [0.88, 0.98], [0.02, 0.98]]
+    }
+  ]
+}

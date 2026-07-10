@@ -64,3 +64,8 @@ auto.key
 auto.crt
 *.key
 *.pem
+
+# FrameInsight runtime output (per-site, generated)
+events/
+state/
+artifacts/

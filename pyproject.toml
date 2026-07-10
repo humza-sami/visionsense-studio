@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frameinsight"
+version = "0.1.0"
+description = "Multi-camera video-analytics backend on NVIDIA DeepStream: rule kernels over detection metadata"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+]
+# pyservicemaker (the DeepStream Python API) is NOT pip-installable from PyPI —
+# it ships inside the DeepStream 9.0 container. See README "Install".
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+frameinsight = "frameinsight.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["frameinsight*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
