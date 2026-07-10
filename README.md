@@ -44,6 +44,9 @@ tests/                       kernel + config test suite (runs anywhere, no GPU)
 
 models/deepstream/           YOLO26 model packs: custom NMS-free bbox parser,
                              nvinfer configs (n/s/m/l/x), labels; ONNX/engines git-ignored
+dashboard/                   FrameInsight Analytics Cloud — the online dashboard
+                             (Next.js + shadcn/ui; per-vertical skins, fleet health,
+                             alerts, reports, AI insights; own README, split-ready)
 docker/Dockerfile            the one edge image every site runs
 scripts/                     engine building, edge launcher, benchmark harnesses
 docs/                        architecture, benchmark report, DeepStream guides
