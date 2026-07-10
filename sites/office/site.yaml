@@ -1,0 +1,92 @@
+# ── FrameInsight site: office client ────────────────────────────────────────
+# 16 cameras, one Dahua NVR, full-resolution mainstreams (HEVC 2560×1440@25 —
+# probed 10 Jul 2026; 16×4MP25 ≈ 1.47 Gpx/s ≈ 85% of one Ampere NVDEC, fits).
+#
+# Applications per room camera:
+#   • how many people are in the room            → headcount (built-in)
+#   • who is seated at a desk and "working"      → desk_occupancy (apps/, custom)
+#
+# Zones: draw one polygon per desk (desk1, desk2, …) in Zone Studio:
+#   frameinsight studio sites/office
+#
+# Credentials in env only:
+#   export OFFICE_NVR_TMPL='rtsp://USER:PASS@NVR_HOST:554/cam/realmonitor?channel={ch}&subtype=0'
+
+site: office-client
+models_dir: /models
+streammux: {width: 2560, height: 1440}     # native — no resolution drop
+url_template: ${OFFICE_NVR_TMPL}
+
+cameras:
+  cam01: {channel: 1,  fps: 25}
+  cam02: {channel: 2,  fps: 25}
+  cam03: {channel: 3,  fps: 25}
+  cam04: {channel: 4,  fps: 25}
+  cam05: {channel: 5,  fps: 25}
+  cam06: {channel: 6,  fps: 25}
+  cam07: {channel: 7,  fps: 25}
+  cam08: {channel: 8,  fps: 25}
+  cam09: {channel: 9,  fps: 25}
+  cam10: {channel: 10, fps: 25}
+  cam11: {channel: 11, fps: 25}
+  cam12: {channel: 12, fps: 25}
+  cam13: {channel: 13, fps: 25}
+  cam14: {channel: 14, fps: 25}
+  cam15: {channel: 15, fps: 25}
+  cam16: {channel: 16, fps: 25}
+
+groups:
+  - name: office
+    model: yolo26x            # requested: xlarge on all cameras
+    detect_fps: 5             # 25 fps in → nvinfer interval=4 → 5 det/s/cam
+    tracker: NvSORT           # desk timers are zone-based, cheap tracker is enough
+    # NOTE (testing from off-site): the NVR's internet uplink delivers ~20 Mbps
+    # and one 4MP mainstream is ~6 Mbps, so only ~3 full-res cameras fit over
+    # the WAN. On-site (LAN) all 16 fit — the GPU budget is sized for that.
+    # Restore the full list when the box is deployed at the office:
+    # cameras: [cam01, cam02, cam03, cam04, cam05, cam06, cam07, cam08,
+    #           cam09, cam10, cam11, cam12, cam13, cam14, cam15, cam16]
+    cameras: [cam01, cam02, cam03]
+
+# Two rules per camera. headcount runs on the whole frame; desk_occupancy
+# reads every desk* polygon from the camera's zone file (no fragment in the
+# zone ref = all zones in the file) and stays inert until desks are drawn.
+rules:
+  - {name: cam01_people, camera: cam01, kernel: headcount, params: &hc {classes: [person], min_conf: 0.4, report_every_s: 30, window_s: 12}}
+  - {name: cam02_people, camera: cam02, kernel: headcount, params: *hc}
+  - {name: cam03_people, camera: cam03, kernel: headcount, params: *hc}
+#  - {name: cam04_people, camera: cam04, kernel: headcount, params: *hc}
+#  - {name: cam05_people, camera: cam05, kernel: headcount, params: *hc}
+#  - {name: cam06_people, camera: cam06, kernel: headcount, params: *hc}
+#  - {name: cam07_people, camera: cam07, kernel: headcount, params: *hc}
+#  - {name: cam08_people, camera: cam08, kernel: headcount, params: *hc}
+#  - {name: cam09_people, camera: cam09, kernel: headcount, params: *hc}
+#  - {name: cam10_people, camera: cam10, kernel: headcount, params: *hc}
+#  - {name: cam11_people, camera: cam11, kernel: headcount, params: *hc}
+#  - {name: cam12_people, camera: cam12, kernel: headcount, params: *hc}
+#  - {name: cam13_people, camera: cam13, kernel: headcount, params: *hc}
+#  - {name: cam14_people, camera: cam14, kernel: headcount, params: *hc}
+#  - {name: cam15_people, camera: cam15, kernel: headcount, params: *hc}
+#  - {name: cam16_people, camera: cam16, kernel: headcount, params: *hc}
+
+  - {name: cam01_desks, camera: cam01, kernel: desk_occupancy, zone: zones/cam01.json, params: &dk {classes: [person], min_conf: 0.45, sustain_s: 5, empty_grace_s: 20, working_after_s: 120, summary_every_s: 60}}
+  - {name: cam02_desks, camera: cam02, kernel: desk_occupancy, zone: zones/cam02.json, params: *dk}
+  - {name: cam03_desks, camera: cam03, kernel: desk_occupancy, zone: zones/cam03.json, params: *dk}
+#  - {name: cam04_desks, camera: cam04, kernel: desk_occupancy, zone: zones/cam04.json, params: *dk}
+#  - {name: cam05_desks, camera: cam05, kernel: desk_occupancy, zone: zones/cam05.json, params: *dk}
+#  - {name: cam06_desks, camera: cam06, kernel: desk_occupancy, zone: zones/cam06.json, params: *dk}
+#  - {name: cam07_desks, camera: cam07, kernel: desk_occupancy, zone: zones/cam07.json, params: *dk}
+#  - {name: cam08_desks, camera: cam08, kernel: desk_occupancy, zone: zones/cam08.json, params: *dk}
+#  - {name: cam09_desks, camera: cam09, kernel: desk_occupancy, zone: zones/cam09.json, params: *dk}
+#  - {name: cam10_desks, camera: cam10, kernel: desk_occupancy, zone: zones/cam10.json, params: *dk}
+#  - {name: cam11_desks, camera: cam11, kernel: desk_occupancy, zone: zones/cam11.json, params: *dk}
+#  - {name: cam12_desks, camera: cam12, kernel: desk_occupancy, zone: zones/cam12.json, params: *dk}
+#  - {name: cam13_desks, camera: cam13, kernel: desk_occupancy, zone: zones/cam13.json, params: *dk}
+#  - {name: cam14_desks, camera: cam14, kernel: desk_occupancy, zone: zones/cam14.json, params: *dk}
+#  - {name: cam15_desks, camera: cam15, kernel: desk_occupancy, zone: zones/cam15.json, params: *dk}
+#  - {name: cam16_desks, camera: cam16, kernel: desk_occupancy, zone: zones/cam16.json, params: *dk}
+
+sinks:
+  - {type: console}
+  - {type: jsonl,  path: events/office.jsonl}
+  - {type: sqlite, path: events/office.db}

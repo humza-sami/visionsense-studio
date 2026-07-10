@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FrameInsight Studio</title>
+<style>
+  :root{--bg:#0e1116;--panel:#161b22;--border:#2b3240;--fg:#e6e9ef;--muted:#8b95a5;
+        --accent:#4f8ef7;--ok:#2ecc71;--warn:#f1c40f;--bad:#e74c3c;--work:#9b59b6;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;height:100vh;display:flex;overflow:hidden}
+  aside{width:220px;min-width:220px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column}
+  aside h1{font-size:15px;padding:14px 14px 4px}
+  aside .sub{color:var(--muted);font-size:11px;padding:0 14px 10px;border-bottom:1px solid var(--border)}
+  #cams{overflow-y:auto;flex:1}
+  .cam{padding:9px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;border-bottom:1px solid #1b2129}
+  .cam:hover{background:#1b222c}.cam.active{background:#20304a}
+  .dot{width:8px;height:8px;border-radius:50%;background:#555}
+  .dot.live{background:var(--ok)}.dot.stale{background:var(--bad)}
+  .cam small{color:var(--muted);margin-left:auto}
+  main{flex:1;display:flex;flex-direction:column;min-width:0}
+  header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel)}
+  header h2{font-size:15px}
+  .tabs{display:flex;gap:4px;margin-left:14px}
+  .tab{padding:6px 14px;border-radius:6px;cursor:pointer;color:var(--muted)}
+  .tab.active{background:#20304a;color:var(--fg)}
+  header .right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  button{background:#232b38;color:var(--fg);border:1px solid var(--border);border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px}
+  button:hover{background:#2b3546}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.danger{background:transparent;border-color:var(--bad);color:var(--bad)}
+  button:disabled{opacity:.45;cursor:default}
+  #content{flex:1;display:flex;min-height:0}
+  #viewwrap{flex:1;display:flex;align-items:center;justify-content:center;background:#05070a;position:relative;min-width:0}
+  #stage{position:relative;max-width:100%;max-height:100%}
+  #stage img{display:block;max-width:100%;max-height:calc(100vh - 60px);user-select:none;-webkit-user-drag:none}
+  #overlay{position:absolute;inset:0;cursor:crosshair}
+  #side{width:300px;min-width:300px;border-left:1px solid var(--border);background:var(--panel);overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+  #side h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  .zrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:6px}
+  .zrow.selected{border-color:var(--accent)}
+  .zrow input{background:transparent;border:none;color:var(--fg);width:110px;font-size:13px}
+  .zrow .type{font-size:11px;color:var(--muted)}
+  .zrow .del{margin-left:auto;color:var(--bad);cursor:pointer;padding:0 4px}
+  .kpis{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .kpi{background:#10151c;border:1px solid var(--border);border-radius:8px;padding:10px}
+  .kpi .v{font-size:22px;font-weight:600}
+  .kpi .l{font-size:11px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  td,th{padding:5px 6px;text-align:left;border-bottom:1px solid #1d232d}
+  th{color:var(--muted);font-weight:500;font-size:11px}
+  td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
+  .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px}
+  .b-empty{background:#2a2f3a;color:var(--muted)}
+  .b-present{background:rgba(241,196,15,.15);color:var(--warn)}
+  .b-working{background:rgba(155,89,182,.2);color:#c39bd3}
+  #events{font-size:12px;display:flex;flex-direction:column;gap:5px}
+  #events .ev{padding:5px 8px;background:#10151c;border-radius:6px;border-left:3px solid var(--accent)}
+  #events .ev.alert{border-left-color:var(--bad)}
+  #events .ev small{color:var(--muted)}
+  #hint{position:absolute;bottom:10px;left:10px;background:rgba(0,0,0,.65);padding:6px 12px;border-radius:6px;font-size:12px;color:#cfd6e0}
+  #toast{position:fixed;bottom:18px;right:18px;background:#20304a;padding:10px 16px;border-radius:8px;display:none;z-index:9}
+  .muted{color:var(--muted)}
+</style>
+</head>
+<body>
+<aside>
+  <h1>FrameInsight Studio</h1>
+  <div class="sub" id="sitename">loading…</div>
+  <div id="cams"></div>
+</aside>
+<main>
+  <header>
+    <h2 id="camtitle">—</h2>
+    <div class="tabs">
+      <div class="tab active" id="tab-zones" onclick="setTab('zones')">Zones</div>
+      <div class="tab" id="tab-live" onclick="setTab('live')">Live</div>
+    </div>
+    <div class="right" id="zonebtns">
+      <button onclick="refreshSnapshot()">↻ New snapshot</button>
+      <button onclick="startDraw('polygon')">+ Desk area</button>
+      <button onclick="startDraw('line')">+ Line</button>
+      <button class="primary" onclick="saveZones()">Save zones</button>
+    </div>
+    <div class="right" id="livebtns" style="display:none">
+      <span class="muted" id="livestatus">connecting…</span>
+    </div>
+  </header>
+  <div id="content">
+    <div id="viewwrap">
+      <div id="stage">
+        <img id="frame" alt="">
+        <canvas id="overlay"></canvas>
+      </div>
+      <div id="hint" style="display:none"></div>
+    </div>
+    <div id="side"></div>
+  </div>
+</main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+/* ── state ─────────────────────────────────────────────────────────────── */
+let SITE=null, cam=null, tab='zones';
+let zones=[];            // [{name,type,points:[[nx,ny],...]}] normalized
+let drawing=null;        // {type, points:[[nx,ny],...]} while drawing
+let selected=-1, dragging=null;   // dragging: {zi, pi}
+let liveTimer=null, eventsTimer=null, liveData=null, lastLiveAt=0;
+
+const $=id=>document.getElementById(id);
+const img=$('frame'), cv=$('overlay'), ctx=cv.getContext('2d');
+
+function toast(msg,ok=true){const t=$('toast');t.textContent=msg;
+  t.style.background=ok?'#1e3a2a':'#4a2020';t.style.display='block';
+  clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',3000);}
+
+/* ── boot ──────────────────────────────────────────────────────────────── */
+async function boot(){
+  SITE=await (await fetch('/api/site')).json();
+  $('sitename').textContent=SITE.site;
+  const list=$('cams');
+  SITE.cameras.forEach(c=>{
+    const d=document.createElement('div');d.className='cam';d.id='cam-'+c.id;
+    d.innerHTML=`<span class="dot" id="dot-${c.id}"></span>${c.id}<small>ch${c.channel??'—'}</small>`;
+    d.onclick=()=>selectCam(c.id);list.appendChild(d);
+  });
+  pollDots();setInterval(pollDots,5000);
+  selectCam(SITE.cameras[0].id);
+}
+async function pollDots(){
+  for(const c of SITE.cameras){
+    try{const r=await (await fetch('/api/live/'+c.id)).json();
+      $('dot-'+c.id).className='dot '+(r.stale?'stale':'live');}
+    catch(e){$('dot-'+c.id).className='dot';}
+  }
+}
+
+/* ── camera & tab switching ────────────────────────────────────────────── */
+async function selectCam(id){
+  cam=id;drawing=null;selected=-1;
+  document.querySelectorAll('.cam').forEach(e=>e.classList.remove('active'));
+  $('cam-'+id).classList.add('active');
+  $('camtitle').textContent=id;
+  await loadZonesFile();
+  setTab(tab); // re-enter current tab for the new camera
+}
+function setTab(t){
+  tab=t;
+  $('tab-zones').classList.toggle('active',t==='zones');
+  $('tab-live').classList.toggle('active',t==='live');
+  $('zonebtns').style.display=t==='zones'?'flex':'none';
+  $('livebtns').style.display=t==='live'?'flex':'none';
+  stopLive();
+  if(t==='zones'){ img.src='/api/snapshot/'+cam+'?t='+Date.now(); $('hint').style.display='none'; renderSide(); }
+  else startLive();
+}
+img.onload=()=>{sizeCanvas();draw();};
+window.onresize=()=>{sizeCanvas();draw();};
+function sizeCanvas(){cv.width=img.clientWidth;cv.height=img.clientHeight;}
+
+async function refreshSnapshot(){
+  toast('grabbing a fresh frame…');
+  img.src='/api/snapshot/'+cam+'?fresh=1&t='+Date.now();
+}
+
+/* ── zones: load/save ──────────────────────────────────────────────────── */
+async function loadZonesFile(){
+  const doc=await (await fetch('/api/zones/'+cam)).json();
+  zones=(doc.zones||[]).map(z=>({name:z.name,type:z.type,points:z.points.map(p=>[p[0],p[1]])}));
+}
+async function saveZones(){
+  const r=await fetch('/api/zones/'+cam,{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({zones:zones})});
+  const j=await r.json();
+  if(r.ok) toast(`saved ${j.zones} zone(s) — ${j.note}`);
+  else toast(j.detail||'save failed',false);
+}
+
+/* ── zones: drawing ────────────────────────────────────────────────────── */
+function nextName(prefix){let i=1;while(zones.some(z=>z.name===prefix+i))i++;return prefix+i;}
+function startDraw(type){
+  drawing={type,points:[]};selected=-1;
+  $('hint').style.display='block';
+  $('hint').textContent=type==='polygon'
+    ?'Click the corners of the desk/chair area · double-click (or Enter) to finish · Esc to cancel'
+    :'Click the two ends of the line (direction matters: left-of-travel = "in") · Esc to cancel';
+  draw();
+}
+function evNorm(e){const r=cv.getBoundingClientRect();
+  return [Math.min(1,Math.max(0,(e.clientX-r.left)/r.width)),
+          Math.min(1,Math.max(0,(e.clientY-r.top)/r.height))];}
+
+cv.addEventListener('mousedown',e=>{
+  if(tab!=='zones')return;
+  const p=evNorm(e);
+  if(drawing){
+    drawing.points.push(p);
+    if(drawing.type==='line'&&drawing.points.length===2)finishDraw();
+    draw();return;
+  }
+  // vertex drag or select
+  for(let zi=0;zi<zones.length;zi++)for(let pi=0;pi<zones[zi].points.length;pi++){
+    const q=zones[zi].points[pi];
+    if(Math.hypot((q[0]-p[0])*cv.width,(q[1]-p[1])*cv.height)<9){dragging={zi,pi};selected=zi;renderSide();draw();return;}
+  }
+  const hit=zones.findIndex(z=>z.type==='polygon'&&pointInPoly(p,z.points));
+  selected=hit;renderSide();draw();
+});
+cv.addEventListener('mousemove',e=>{
+  if(dragging){zones[dragging.zi].points[dragging.pi]=evNorm(e);draw();}
+  else if(drawing&&drawing.points.length){draw(evNorm(e));}
+});
+window.addEventListener('mouseup',()=>dragging=null);
+cv.addEventListener('dblclick',()=>{if(drawing&&drawing.type==='polygon')finishDraw();});
+window.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){drawing=null;$('hint').style.display='none';draw();}
+  if(e.key==='Enter'&&drawing&&drawing.type==='polygon')finishDraw();
+  if(e.key==='Delete'&&selected>=0&&!drawing){zones.splice(selected,1);selected=-1;renderSide();draw();}
+});
+function finishDraw(){
+  if(drawing.type==='polygon'&&drawing.points.length<3){toast('need at least 3 corners',false);return;}
+  zones.push({name:nextName(drawing.type==='polygon'?'desk':'line'),
+              type:drawing.type,points:drawing.points});
+  drawing=null;$('hint').style.display='none';selected=zones.length-1;
+  renderSide();draw();
+}
+function pointInPoly(p,poly){let inside=false;
+  for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    if((poly[i][1]>p[1])!==(poly[j][1]>p[1])&&
+       p[0]<(poly[j][0]-poly[i][0])*(p[1]-poly[i][1])/(poly[j][1]-poly[i][1])+poly[i][0])
+      inside=!inside;}
+  return inside;}
+
+/* ── rendering ─────────────────────────────────────────────────────────── */
+const X=nx=>nx*cv.width, Y=ny=>ny*cv.height;
+function drawZone(z,color,fill,label){
+  ctx.strokeStyle=color;ctx.lineWidth=2;ctx.fillStyle=fill;
+  ctx.beginPath();
+  z.points.forEach((p,i)=>i?ctx.lineTo(X(p[0]),Y(p[1])):ctx.moveTo(X(p[0]),Y(p[1])));
+  if(z.type==='polygon'){ctx.closePath();ctx.fill();}
+  ctx.stroke();
+  z.points.forEach(p=>{ctx.beginPath();ctx.arc(X(p[0]),Y(p[1]),4,0,7);ctx.fillStyle=color;ctx.fill();});
+  const p0=z.points[0];
+  ctx.font='12px system-ui';ctx.fillStyle=color;
+  ctx.fillText(label??z.name,X(p0[0])+6,Y(p0[1])-6);
+}
+function draw(cursor){
+  ctx.clearRect(0,0,cv.width,cv.height);
+  if(tab==='zones'){
+    zones.forEach((z,i)=>drawZone(z,i===selected?'#4f8ef7':'#f1c40f',
+      i===selected?'rgba(79,142,247,.18)':'rgba(241,196,15,.10)'));
+    if(drawing&&drawing.points.length){
+      const tmp={type:drawing.type,points:cursor?[...drawing.points,cursor]:drawing.points,name:'…'};
+      drawZone(tmp,'#2ecc71','rgba(46,204,113,.12)','new '+drawing.type);
+    }
+  }else if(liveData){
+    // desk zones colored by live status
+    const desks=(liveData.rules&&Object.values(liveData.rules).find(r=>r.kind==='desk_occupancy'))||null;
+    zones.filter(z=>z.type==='polygon').forEach(z=>{
+      const st=desks&&desks.per_desk&&desks.per_desk[z.name];
+      const col=!st?'#8b95a5':st.working?'#9b59b6':st.occupied?'#f1c40f':'#5d6b7f';
+      const lbl=st?`${z.name} ${st.occupied?fmtT(st.session_s):''}`:z.name;
+      drawZone(z,col,st&&st.occupied?'rgba(155,89,182,.12)':'rgba(120,130,150,.06)',lbl);
+    });
+    // detection boxes
+    (liveData.detections||[]).forEach(d=>{
+      const[x,y,w,h]=d.bbox;
+      ctx.strokeStyle='#2ecc71';ctx.lineWidth=2;
+      ctx.strokeRect(X(x),Y(y),X(w),Y(h));
+      ctx.font='11px system-ui';ctx.fillStyle='#2ecc71';
+      ctx.fillText(`#${d.id??'?'} ${d.cls} ${(d.conf*100)|0}%`,X(x)+3,Y(y)-4);
+    });
+  }
+}
+
+/* ── live mode ─────────────────────────────────────────────────────────── */
+function startLive(){
+  img.src='/stream/'+cam+'.mjpg?t='+Date.now();
+  liveTimer=setInterval(pollLive,250);
+  eventsTimer=setInterval(pollEvents,4000);
+  pollLive();pollEvents();
+}
+function stopLive(){
+  clearInterval(liveTimer);clearInterval(eventsTimer);liveTimer=eventsTimer=null;liveData=null;
+}
+async function pollLive(){
+  try{
+    const r=await (await fetch('/api/live/'+cam)).json();
+    liveData=r;lastLiveAt=Date.now();
+    $('livestatus').textContent=r.stale?'⚠ no pipeline data (is frameinsight run active?)':`live · ${r.age_s}s behind`;
+    $('livestatus').style.color=r.stale?'var(--bad)':'var(--ok)';
+    draw();renderSide();
+  }catch(e){$('livestatus').textContent='studio API error';}
+}
+async function pollEvents(){
+  try{
+    const evs=await (await fetch('/api/events/'+cam)).json();
+    const el=$('events');if(!el)return;
+    el.innerHTML=evs.length?evs.map(e=>
+      `<div class="ev ${e.severity==='alert'?'alert':''}">
+        <b>${e.kind}</b> <small>· ${e.rule} · ${new Date(e.ts*1000).toLocaleTimeString()}</small><br>
+        <small>${JSON.stringify(e.data)}</small></div>`).join('')
+      :'<span class="muted">no events yet</span>';
+  }catch(e){}
+}
+function fmtT(s){s=Math.round(s);const m=(s/60)|0,h=(m/60)|0;
+  return h?`${h}h${String(m%60).padStart(2,'0')}m`:m?`${m}m${String(s%60).padStart(2,'0')}s`:`${s}s`;}
+
+/* ── side panel ────────────────────────────────────────────────────────── */
+function renderSide(){
+  const side=$('side');
+  if(tab==='zones'){
+    side.innerHTML='<h3>Zones on this camera</h3>'+
+      (zones.length?'':'<span class="muted">None yet — use “+ Desk area” and click the corners of each chair/desk on the image. Name them desk1, desk2… (the desk_occupancy rule reads every “desk*” polygon).</span>');
+    zones.forEach((z,i)=>{
+      const row=document.createElement('div');row.className='zrow'+(i===selected?' selected':'');
+      row.innerHTML=`<input value="${z.name}"><span class="type">${z.type} · ${z.points.length}pt</span><span class="del">✕</span>`;
+      row.querySelector('input').onchange=e=>{z.name=e.target.value.trim()||z.name;draw();};
+      row.querySelector('.del').onclick=()=>{zones.splice(i,1);selected=-1;renderSide();draw();};
+      row.onclick=e=>{if(e.target.tagName!=='INPUT'){selected=i;renderSide();draw();}};
+      side.appendChild(row);
+    });
+    const tips=document.createElement('div');
+    tips.innerHTML='<h3 style="margin-top:8px">How it works</h3><span class="muted" style="font-size:12px">Zones are saved as % of the image (resolution-independent) into <code>zones/'+cam+'.json</code>. The running pipeline picks them up on its next restart. Drag any corner dot to adjust. Select + Delete key removes.</span>';
+    side.appendChild(tips);
+    return;
+  }
+  // live panel
+  const hc=liveData&&liveData.rules&&Object.values(liveData.rules).find(r=>r.kind==='headcount');
+  const dk=liveData&&liveData.rules&&Object.values(liveData.rules).find(r=>r.kind==='desk_occupancy');
+  let html=`<h3>Room — live</h3><div class="kpis">
+    <div class="kpi"><div class="v">${hc?hc.current:'—'}</div><div class="l">people in view</div></div>
+    <div class="kpi"><div class="v">${dk?dk.occupied+'/'+dk.desks:'—'}</div><div class="l">desks occupied</div></div>
+    <div class="kpi"><div class="v">${dk?dk.working:'—'}</div><div class="l">working (&gt;2 min seated)</div></div>
+    <div class="kpi"><div class="v">${liveData&&!liveData.stale?(liveData.detections||[]).length:'—'}</div><div class="l">boxes this frame</div></div>
+  </div>`;
+  if(dk&&dk.per_desk){
+    html+='<h3>Desk timers</h3><table><tr><th>desk</th><th>status</th><th class="r">session</th><th class="r">today</th></tr>';
+    Object.entries(dk.per_desk).sort().forEach(([name,st])=>{
+      const badge=st.working?'<span class="badge b-working">working</span>'
+                 :st.occupied?'<span class="badge b-present">present</span>'
+                 :'<span class="badge b-empty">empty</span>';
+      html+=`<tr><td>${name}</td><td>${badge}</td>
+        <td class="r">${st.occupied?fmtT(st.session_s):'—'}</td>
+        <td class="r">${fmtT(st.today_s)}</td></tr>`;
+    });
+    html+='</table>';
+  } else {
+    html+='<span class="muted">No desk zones on this camera yet — draw them in the Zones tab.</span>';
+  }
+  html+='<h3>Recent events</h3><div id="events"><span class="muted">…</span></div>';
+  $('side').innerHTML=html;
+  pollEvents();
+}
+
+boot();
+</script>
+</body>
+</html>

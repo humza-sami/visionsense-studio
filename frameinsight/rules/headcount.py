@@ -45,6 +45,13 @@ class Headcount(Rule):
         self._samples: list[tuple[float, int]] = []
         self._report_at: float | None = None
 
+    def live_state(self) -> dict:
+        counts = [c for _, c in self._samples]
+        return {
+            "current": int(median(counts)) if counts else 0,
+            "raw_last": counts[-1] if counts else 0,
+        }
+
     def on_frame(self, ts: float, detections: list[Detection]) -> None:
         if self.zone is not None:
             poly = list(self.zone.points)

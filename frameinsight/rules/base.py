@@ -72,6 +72,16 @@ class Rule:
     def on_track_lost(self, ts: float, track_id: int) -> None:
         """Called when a track exceeds ``lost_timeout_s`` without being seen."""
 
+    def live_state(self) -> dict[str, Any]:
+        """Small JSON-safe dict of what's true *right now* (for live UIs).
+
+        Unlike events (facts that happened) this is a snapshot of current
+        state — e.g. headcount now, which desks are occupied and for how
+        long. The runtime publishes it to ``state/live/<cam>.json`` a few
+        times per second. Return {} (default) to publish nothing.
+        """
+        return {}
+
     # -- state persistence (crash-safety; see architecture doc §8) ------------
 
     def snapshot_state(self) -> dict[str, Any]:

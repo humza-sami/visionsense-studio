@@ -149,6 +149,19 @@ def cmd_kernels(args: argparse.Namespace) -> int:
     return 0
 
 
+# -- studio --------------------------------------------------------------------
+
+def cmd_studio(args: argparse.Namespace) -> int:
+    try:
+        from .studio.server import run
+    except ImportError as e:
+        print(f"error: studio needs fastapi+uvicorn — pip install 'frameinsight[studio]' ({e})",
+              file=sys.stderr)
+        return 2
+    run(args.site, host=args.host, port=args.port)
+    return 0
+
+
 # -- entry ---------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
@@ -179,6 +192,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("kernels", help="list available rule kernels")
     p.add_argument("site", nargs="?", help="also load this site's plugins")
     p.set_defaults(fn=cmd_kernels)
+
+    p = sub.add_parser("studio",
+                       help="local web UI: draw zones + live view (needs ffmpeg)")
+    p.add_argument("site")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--host", default="0.0.0.0")
+    p.set_defaults(fn=cmd_studio)
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)

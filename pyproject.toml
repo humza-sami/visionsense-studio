@@ -15,12 +15,16 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+studio = ["fastapi>=0.110", "uvicorn>=0.29"]
 
 [project.scripts]
 frameinsight = "frameinsight.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["frameinsight*"]
+
+[tool.setuptools.package-data]
+"frameinsight.studio" = ["static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

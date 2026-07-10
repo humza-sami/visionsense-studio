@@ -16,7 +16,6 @@ cluster-mode=4
 gie-unique-id=1
 parse-bbox-func-name=NvDsInferParseYolo26
 custom-lib-path=/models/parser/libnvdsparser_yolo26.so
-interval=11
 
 [class-attrs-all]
 pre-cluster-threshold=0.3

@@ -35,11 +35,16 @@ frameinsight/                the backend package
   dispatch.py                camera → rules routing, crash-safe rule state
   sinks.py                   console / JSONL / SQLite / Supabase event sinks
   runtime.py                 DeepStream pipeline per group (pyservicemaker; GPU side)
+                             + live-state publisher (state/live/<cam>.json, ~5 Hz)
   replay.py                  run recorded detections through rules — no GPU
-  cli.py                     frameinsight validate | replay | run | kernels
+  studio/                    Zone Studio: local web UI — draw zones on camera
+                             snapshots, single-camera live view with boxes/timers
+  cli.py                     frameinsight validate | replay | run | studio | kernels
 
-examples/school/             complete worked site: gate counting, water-cooler
+examples/school/             worked example site: gate counting, water-cooler
                              dwell, classroom headcounts, one custom kernel
+sites/office/                real deployment: 16×4MP cams, yolo26x @ 5 det/s,
+                             room headcount + per-desk occupancy/working timers
 tests/                       kernel + config test suite (runs anywhere, no GPU)
 
 models/deepstream/           YOLO26 model packs: custom NMS-free bbox parser,
@@ -117,6 +122,10 @@ bash scripts/run_edge.sh examples/school
 
 # …or a single group, without the supervisor:
 bash scripts/run_edge.sh examples/school entrances
+
+# 4. Zone Studio — draw zones with the mouse + watch a camera live with boxes
+#    and rule timers overlaid (needs ffmpeg; pip install 'frameinsight[studio]')
+frameinsight studio sites/office            # → http://<edge-box>:8765
 ```
 
 Events stream to the sinks listed in site.yaml (console, append-only JSONL,

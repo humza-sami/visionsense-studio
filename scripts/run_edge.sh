@@ -15,9 +15,18 @@ GROUP="${2:-}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${FRAMEINSIGHT_IMAGE:-frameinsight/edge:0.1.0}"
 
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+# Use sudo when the user isn't in the docker group.
+DOCKER="docker"
+if ! docker ps >/dev/null 2>&1; then
+    DOCKER="sudo docker"
+fi
+# TTY only when attached to a terminal (works under supervisors/systemd too).
+TTY=""
+[ -t 1 ] && TTY="-it"
+
+if ! $DOCKER image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "building $IMAGE ..." >&2
-    docker build -t "$IMAGE" -f "$REPO/docker/Dockerfile" "$REPO"
+    $DOCKER build -t "$IMAGE" -f "$REPO/docker/Dockerfile" "$REPO"
 fi
 
 # Engines must be prebuilt (building TensorRT engines under live decode load
@@ -29,9 +38,10 @@ fi
 
 # --ulimit nofile: each RTSP source costs several fds; the default 1024 dies
 # around 64 streams (measured). --network host: RTSP + local dashboards.
-exec docker run --rm -it --gpus all --network host \
+exec $DOCKER run --rm $TTY --gpus all --network host \
     --ulimit nofile=65536:65536 \
-    -e NVR_TMPL -e SCHOOL_NVR_TMPL -e SUPABASE_URL -e SUPABASE_SERVICE_KEY \
+    -e NVR_TMPL -e SCHOOL_NVR_TMPL -e OFFICE_NVR_TMPL \
+    -e SUPABASE_URL -e SUPABASE_SERVICE_KEY \
     -v "$REPO/models/deepstream:/models" \
     -v "$REPO:/workspace" -w /workspace \
     "$IMAGE" run "/workspace/$SITE" ${GROUP:+-g "$GROUP"}

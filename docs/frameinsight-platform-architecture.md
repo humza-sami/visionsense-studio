@@ -91,11 +91,11 @@ mux: {width: 1280, height: 720}          # THE coordinate space (see 3.3)
 groups:
   - name: fast_alerts                     # intrusion, exit theft
     model: yolo26s
-    detect_fps: 10                        # → nvinfer interval=2 at 30fps input
+    detect_fps: 10                        # → drop-frame-interval=3 at 30fps input
     cameras: [cam01, cam07]
   - name: slow_analytics                  # dwell, tables, occupancy
     model: yolo26s
-    detect_fps: 1                         # → interval=29
+    detect_fps: 1                         # → drop-frame-interval=30
     cameras: [cam02, cam03, cam04]
 cameras:
   cam01: {rtsp: "${NVR_TMPL:ch=1}", note: "main entrance"}
@@ -109,8 +109,17 @@ camera A 10 det/s and camera B 1 det/s. The three real mechanisms:
 | Mechanism | How | Cost / flaw | Use |
 |---|---|---|---|
 | **1. Rate groups → separate pipelines** (default) | one process per (model, rate) | same model in two groups = engine VRAM paid twice (~0.5 GB for `s`); more processes to watch. Keep ≤ 2–3 groups/box | the architecture |
-| **2. Per-source decimation** | `drop-frame-interval` on the source/decoder drops all but every Nth frame of that camera post-decode | NVDEC load barely drops (reference frames must decode anyway); tracker + live view of that cam get choppy | fine-tuning inside a group |
+| **2. Per-source decimation** (how the runtime implements a group's rate) | `drop-frame-interval=N` on `nvurisrcbin` keeps 1 frame in N post-decode; nvinfer runs `interval=0` | NVDEC load barely drops (reference frames must decode anyway); live view of that cam runs at detect rate | the mechanism inside every group |
 | **3. Detect at max rate, subsample in rules** | rules ignore ticks they don't need | pays GPU for discarded detections | interim only, while compute is far from the wall |
+
+> **Field lesson (office deployment, Jul 2026): do NOT set `nvinfer interval>0` and feed
+> rules every frame.** On DS 9.0, objects exist only on inferred frames — NvSORT does not
+> propagate tracks across skipped frames — so downstream consumers see mostly-empty
+> frames. A 25 fps stream where 4 of 5 frames are empty drives a headcount median to
+> zero, and any fixed-rate sampler (our 5 Hz live-state publisher) phase-locks onto the
+> empty frames and reports nothing, forever. The runtime therefore decimates **at the
+> source** (`drop-frame-interval`) and infers **every** remaining frame: everything a
+> rule sees is a real detection pass, and `detect_fps` means exactly what it says.
 
 ### 3.3 Coordinate spaces — read this before writing any geometry
 

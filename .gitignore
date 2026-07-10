@@ -69,3 +69,6 @@ auto.crt
 events/
 state/
 artifacts/
+
+# Client camera reference snapshots stay on the edge box (privacy)
+sites/*/zones/*_ref.jpg

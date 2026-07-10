@@ -21,6 +21,7 @@ Key facts baked in from the benchmarks (docs/deepstream-benchmark-report.md):
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -47,12 +48,55 @@ def load_labels(models_dir: str) -> list[str]:
     return [ln.strip() for ln in path.read_text().splitlines() if ln.strip()]
 
 
-def nvinfer_interval(cam_fps: float, detect_fps: float) -> int:
-    """nvinfer runs 1 batch then skips ``interval`` batches: effective rate is
-    fps/(interval+1). interval=2 at 30 fps ≈ 10 detections/s."""
+def source_drop_interval(cam_fps: float, detect_fps: float) -> int:
+    """Per-source decimation: nvurisrcbin's ``drop-frame-interval=N`` keeps
+    1 frame in N after decode (N<=1 keeps all). We decimate at the source and
+    run nvinfer with interval=0 so **every frame the rules see is an inferred
+    frame** — measured: with nvinfer interval>0, objects only exist on inferred
+    frames (NvSORT does not propagate on skipped frames), which poisons
+    frame-level kernels (a 25 fps stream of mostly-empty frames drives a
+    headcount median to zero) and phase-aliases any fixed-rate sampler.
+    Decode still runs at full fps on NVDEC; only downstream work drops."""
     if detect_fps <= 0:
         return 0
-    return max(0, round(cam_fps / detect_fps) - 1)
+    return max(1, round(cam_fps / detect_fps))
+
+
+class LiveStateWriter:
+    """Publishes each camera's latest detections + rule live-state to
+    ``<site>/state/live/<cam>.json`` a few times per second (atomic replace).
+
+    This file is the contract with the local live-view UI (Zone Studio): the
+    UI overlays these normalized boxes on the video and shows the timers —
+    no video path between the pipeline and the UI, just this tiny JSON.
+    """
+
+    def __init__(self, site: SiteConfig, hz: float = 5.0) -> None:
+        self.dir = site.base_dir / site.state_dir / "live"
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._min_gap = 1.0 / hz
+        self._last_write: dict[str, float] = {}
+
+    def publish(self, cam_id: str, ts: float, detections: list[Detection],
+                rules: dict) -> None:
+        if ts - self._last_write.get(cam_id, 0.0) < self._min_gap:
+            return
+        self._last_write[cam_id] = ts
+        doc = {
+            "cam": cam_id,
+            "ts": round(ts, 3),
+            "detections": [
+                {"id": d.track_id if d.is_tracked else None,
+                 "cls": d.class_name,
+                 "conf": round(d.confidence, 3),
+                 "bbox": [round(v, 4) for v in d.bbox]}
+                for d in detections
+            ],
+            "rules": rules,
+        }
+        tmp = self.dir / f".{cam_id}.tmp"
+        tmp.write_text(json.dumps(doc, separators=(",", ":")))
+        tmp.replace(self.dir / f"{cam_id}.json")
 
 
 class GroupRuntime:
@@ -71,6 +115,7 @@ class GroupRuntime:
         self._last_frame: dict[str, float] = {}
         self._stall_alerted: dict[str, float] = {}
         self._stop = threading.Event()
+        self.live = LiveStateWriter(site)
 
     # -- probe ------------------------------------------------------------------
 
@@ -107,6 +152,8 @@ class GroupRuntime:
                     rt._frames_seen[cam_id] += 1
                     rt._last_frame[cam_id] = ts
                     rt.dispatcher.process_frame(cam_id, ts, dets)
+                    rt.live.publish(cam_id, ts, dets,
+                                    rt.dispatcher.live_state(cam_id))
 
         return Probe("frameinsight-probe", MetaProbe())
 
@@ -127,16 +174,17 @@ class GroupRuntime:
                              f"(have: {', '.join(TRACKER_CONFIGS)})")
 
         n = len(g.cameras)
-        max_fps = max(self.site.cameras[c].fps for c in g.cameras)
-        interval = nvinfer_interval(max_fps, g.detect_fps)
-        log.info("group '%s': %d cam(s), model=%s, detect_fps=%s → interval=%d",
-                 g.name, n, g.model, g.detect_fps, interval)
 
         pipeline = Pipeline(f"frameinsight-{self.site.site}-{g.name}")
         for i, cam_id in enumerate(self.cam_order):
+            cam = self.site.cameras[cam_id]
+            drop = source_drop_interval(cam.fps, g.detect_fps)
+            log.info("group '%s': %s decode %sfps → keep 1/%d → %.3g det/s",
+                     g.name, cam_id, cam.fps, drop, cam.fps / drop)
             pipeline.add("nvurisrcbin", f"src{i}", {
-                "uri": self.site.cameras[cam_id].resolved_url(),
+                "uri": cam.resolved_url(),
                 "rtsp-reconnect-interval": 10,
+                "drop-frame-interval": drop,
             })
         pipeline.add("nvstreammux", "mux", {
             "batch-size": n,
@@ -148,7 +196,7 @@ class GroupRuntime:
         pipeline.add("nvinfer", "pgie", {
             "config-file-path": pgie_cfg,
             "batch-size": n,
-            "interval": interval,
+            "interval": 0,   # every downstream frame is inferred (see above)
         })
         pipeline.add("nvtracker", "tracker", {
             "ll-lib-file": TRACKER_LIB,

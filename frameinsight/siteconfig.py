@@ -84,11 +84,16 @@ class Camera:
         if self.url:
             return self.url
         if self.channel is not None and self._template:
-            return self._template.replace("{ch}", str(self.channel))
+            return self._template
         raise ValueError(f"camera '{self.cam_id}': set either url, or channel + site url_template")
 
     def resolved_url(self) -> str:
-        return expand_env(self.raw_url())
+        # Expand env FIRST: the {ch} placeholder usually lives inside the env
+        # var's value (e.g. OFFICE_NVR_TMPL='rtsp://…channel={ch}&…').
+        url = expand_env(self.raw_url())
+        if self.channel is not None:
+            url = url.replace("{ch}", str(self.channel))
+        return url
 
 
 @dataclass

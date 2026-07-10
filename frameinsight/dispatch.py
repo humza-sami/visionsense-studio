@@ -24,7 +24,7 @@ from .rules.base import Rule
 from .siteconfig import SiteConfig
 from .sinks import EventSink
 from .types import Detection
-from .zones import resolve_zone
+from .zones import load_zone_file, resolve_zone
 
 log = logging.getLogger("frameinsight.dispatch")
 
@@ -62,10 +62,20 @@ class Dispatcher:
                 raise ValueError(
                     f"rule '{binding.name}': unknown kernel '{binding.kernel}' "
                     f"(built-ins + plugins: {', '.join(sorted(KERNELS))})")
-            zone = (resolve_zone(binding.zone, site.base_dir)
-                    if binding.zone else None)
+            # zone ref forms: "zones/cam.json#name" → one Zone (zone=);
+            # "zones/cam.json" (no fragment) → every zone in the file, passed
+            # to the kernel as a `zones` list param (multi-zone kernels, e.g.
+            # one polygon per desk).
+            zone = None
+            extra: dict = {}
+            if binding.zone:
+                if "#" in binding.zone:
+                    zone = resolve_zone(binding.zone, site.base_dir)
+                else:
+                    extra["zones"] = list(
+                        load_zone_file(site.base_dir / binding.zone).values())
             rule = cls(site=site.site, cam_id=binding.camera, name=binding.name,
-                       emit=sink.write, zone=zone, **binding.params)
+                       emit=sink.write, zone=zone, **extra, **binding.params)
             self.rules_by_cam[binding.camera].append(rule)
 
         self._restore()
@@ -88,6 +98,19 @@ class Dispatcher:
         if now >= self._next_snapshot:
             self._next_snapshot = now + self.snapshot_every_s
             self.snapshot()
+
+    def live_state(self, cam_id: str) -> dict:
+        """Current state of every rule on this camera (for live UIs)."""
+        out: dict = {}
+        for rule in self.rules_by_cam.get(cam_id, ()):
+            try:
+                state = rule.live_state()
+            except Exception:
+                log.exception("live_state failed for '%s'", rule.name)
+                continue
+            if state:
+                out[rule.name] = {"kind": rule.KIND, **state}
+        return out
 
     # -- crash-safe rule state ---------------------------------------------------
 

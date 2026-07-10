@@ -148,3 +148,12 @@ def test_zone_reference_must_exist(tmp_path):
     site = load_site(tmp_path)
     with pytest.raises(ValueError, match="no zone named 'no_such_zone'"):
         Dispatcher(site, Capture())
+
+
+def test_resolved_url_expands_env_before_channel(tmp_path, monkeypatch):
+    make_site(tmp_path)
+    monkeypatch.setenv("TEST_NVR", "rtsp://u:p@1.2.3.4:554/cam?channel={ch}")
+    site = load_site(tmp_path)
+    # site.yaml template is "${TEST_NVR}/ch{ch}" — both placeholder styles work
+    assert site.cameras["cooler"].resolved_url() == \
+        "rtsp://u:p@1.2.3.4:554/cam?channel=2/ch2"
