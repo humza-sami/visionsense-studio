@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, LayoutDashboard, ScanEye, Sparkles } from "lucide-react";
+import { Bell, Calculator, LayoutDashboard, ScanEye, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -74,6 +74,14 @@ export function AppSidebar({ clients, openAlerts, openAlertsByClient }: AppSideb
                 >
                   <Sparkles />
                   <span>AI Insights</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  render={<a href="/deal-simulator.html" target="_blank" rel="noopener noreferrer" />}
+                >
+                  <Calculator />
+                  <span>Deal Simulator</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>

@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FrameInsight — GCC Deal Simulator</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+:root{
+  --ink:#1b201d; --muted:#5c655f; --faint:#8a938d;
+  --bg:#edf0ed; --card:#ffffff; --line:#d7ddd8;
+  --company:#1f8a66; --commission:#2e5fa3; --equity:#6b4fa3;
+  --brass:#a67c2e; --danger:#b23a3a;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{font-family:'IBM Plex Sans',sans-serif;background:var(--bg);color:var(--ink);line-height:1.55;padding:24px 16px 64px}
+.wrap{max-width:1080px;margin:0 auto}
+@media(max-width:640px){
+  body{padding:16px 12px 48px}
+  .card{padding:14px 14px}
+  .proj-row{gap:6px}
+  .proj-row input{padding:10px 8px;font-size:16px}
+  .proj-row .lbl{min-width:20px;font-size:12px}
+  .pgrid{grid-template-columns:1fr}
+  .pgrid input{font-size:16px;padding:8px}
+  .chartbox{height:220px}
+  .chartbox.tall{height:320px}
+  table{font-size:12px}
+  th,td{padding:7px 6px}
+  .table-scroll table{min-width:520px}
+}
+header{margin-bottom:28px}
+.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--brass);font-weight:600}
+h1{font-family:'Space Grotesk',sans-serif;font-size:clamp(26px,4vw,38px);font-weight:700;line-height:1.15;margin:6px 0 4px}
+.sub{color:var(--muted);font-size:15px;max-width:640px}
+.grid{display:grid;grid-template-columns:340px 1fr;gap:20px;align-items:start}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+.card h2{font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h2 .tag{font-size:11px;font-weight:600;color:var(--faint);letter-spacing:.08em;text-transform:uppercase}
+.proj-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.proj-row .lbl{font-size:13px;color:var(--muted);min-width:26px;font-weight:600}
+.proj-row input{flex:1;padding:9px 10px;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:14px;background:#fbfcfb}
+.proj-row input:focus{outline:2px solid var(--company);outline-offset:-1px;border-color:transparent}
+.proj-row button{border:none;background:transparent;color:var(--faint);cursor:pointer;font-size:16px;padding:4px 6px;border-radius:6px}
+.proj-row button:hover{color:var(--danger);background:#f6ecec}
+.addbtn{width:100%;padding:9px;border:1px dashed var(--line);border-radius:8px;background:transparent;color:var(--muted);font:inherit;font-size:13px;font-weight:600;cursor:pointer;margin-top:2px}
+.addbtn:hover{border-color:var(--company);color:var(--company)}
+.ctl{margin-top:16px}
+.ctl label{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);font-weight:600;margin-bottom:4px}
+.ctl label output{color:var(--ink)}
+input[type=range]{width:100%;accent-color:var(--company)}
+.params{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.params summary{font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
+.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.pgrid label{font-size:11.5px;color:var(--faint);display:block;font-weight:600}
+.pgrid input{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font:inherit;font-size:13px}
+.total-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+@media(max-width:640px){.total-strip{grid-template-columns:1fr 1fr}}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px}
+.stat .k{font-size:12px;color:var(--faint);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.stat .v{font-family:'Space Grotesk',sans-serif;font-size:24px;font-weight:700;margin-top:2px}
+.stat .v small{font-size:13px;color:var(--muted);font-weight:500}
+.legend{display:flex;flex-wrap:wrap;gap:16px;font-size:13px;color:var(--muted);margin:4px 0 10px}
+.legend span{display:flex;align-items:center;gap:6px}
+.dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+.chartbox{position:relative;height:260px;width:100%}
+.chartbox.tall{height:280px}
+table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+th{text-align:right;font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);padding:8px 10px;border-bottom:1px solid var(--line);font-weight:600}
+th:first-child{text-align:left}
+td{padding:9px 10px;border-bottom:1px solid #eef1ee;text-align:right;font-variant-numeric:tabular-nums}
+td:first-child{text-align:left;color:var(--muted);font-weight:500}
+tr.hero td{font-weight:600;background:#f4f8f5}
+tr:last-child td{border-bottom:none}
+.win{color:var(--company);font-weight:700}
+.note{font-size:13px;color:var(--muted);background:#f6f4ec;border:1px solid #e8e2cf;border-radius:10px;padding:12px 14px;margin-top:16px}
+.note b{color:var(--brass)}
+.mstack{margin-top:20px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">FrameInsight · Partner deal room</div>
+  <h1>GCC partnership simulator</h1>
+  <p class="sub">Type each project's value in PKR millions. Every chart, split, and ratio below recalculates live across all four compensation models.</p>
+</header>
+
+<div class="grid">
+  <div>
+    <div class="card">
+      <h2>Projects <span class="tag">PKR millions</span></h2>
+      <div style="display:flex;gap:8px;font-size:11px;color:var(--faint);font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-bottom:4px">
+        <span style="min-width:26px"></span><span style="flex:1">Price</span><span style="flex:1">Delivery cost</span><span style="width:28px"></span>
+      </div>
+      <div id="projects"></div>
+      <button class="addbtn" onclick="addProject()">+ Add project</button>
+      <div class="ctl">
+        <label>Cash actually collected <output id="collectOut">100%</output></label>
+        <input type="range" id="collectPct" min="40" max="100" step="5" value="100" oninput="recalc()">
+      </div>
+      <details class="params" open>
+        <summary>Model parameters (tap to edit)</summary>
+        <div class="pgrid">
+          <div><label>A: equity %</label><input type="number" id="aEq" value="17.5" step="0.5" oninput="recalc()"></div>
+          <div><label>A: commission %</label><input type="number" id="aC" value="5" step="0.5" oninput="recalc()"></div>
+          <div><label>B: equity %</label><input type="number" id="bEq" value="12.5" step="0.5" oninput="recalc()"></div>
+          <div><label>B: commission %</label><input type="number" id="bC" value="10" step="0.5" oninput="recalc()"></div>
+          <div><label>C: commission %</label><input type="number" id="cC" value="20" step="0.5" oninput="recalc()"></div>
+          <div><label>D: phase-1 comm %</label><input type="number" id="dP1" value="20" step="0.5" oninput="recalc()"></div>
+          <div><label>D: phase-2 comm %</label><input type="number" id="dP2" value="10" step="0.5" oninput="recalc()"></div>
+          <div><label>D: trigger (deals)</label><input type="number" id="dTrig" value="3" step="1" oninput="recalc()"></div>
+          <div><label>D: vested equity %</label><input type="number" id="dEq" value="5" step="0.5" oninput="recalc()"></div>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div>
+    <div class="total-strip">
+      <div class="stat"><div class="k">Total revenue</div><div class="v" id="sRev">—</div></div>
+      <div class="stat"><div class="k">Delivery cost</div><div class="v" id="sCost">—</div></div>
+      <div class="stat"><div class="k">Profit pool</div><div class="v" id="sPool">—</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Where the profit pool goes <span class="tag">per model</span></h2>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--company)"></span>Company keeps</span>
+        <span><span class="dot" style="background:var(--commission)"></span>His commission</span>
+        <span><span class="dot" style="background:var(--equity)"></span>His equity dividend</span>
+      </div>
+      <div class="chartbox"><canvas id="stackChart"></canvas></div>
+    </div>
+
+    <div class="card mstack">
+      <h2>His pay vs company's share <span class="tag">head to head</span></h2>
+      <div class="chartbox"><canvas id="pairChart"></canvas></div>
+    </div>
+
+    <div class="card mstack">
+      <h2>Commission earned per project <span class="tag">deal by deal</span></h2>
+      <div class="chartbox tall"><canvas id="projChart"></canvas></div>
+    </div>
+
+    <div class="card mstack">
+      <h2>Full comparison</h2>
+      <div class="table-scroll" style="overflow-x:auto"><table id="cmp"></table></div>
+      <div class="note" id="zeroNote"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const DEFAULTS=[{p:1,c:0.15},{p:3,c:0.5},{p:5,c:0.75}];
+let projects=DEFAULTS.map(o=>({...o}));
+const fmt=n=>{
+  if(!isFinite(n))return'—';
+  const cr=n/10;
+  return n>=1000?(n/1000).toFixed(2)+'B PKR':n.toFixed(1)+'M';
+};
+const fmtFull=n=>n.toFixed(1)+'M PKR ('+(n/10).toFixed(2)+' crore)';
+
+function renderProjects(){
+  const box=document.getElementById('projects');
+  box.innerHTML='';
+  projects.forEach((v,i)=>{
+    const row=document.createElement('div');
+    row.className='proj-row';
+    row.innerHTML=`<span class="lbl">P${i+1}</span>
+      <input type="number" min="0" step="0.05" value="${v.p}" title="Project price (PKR M)" oninput="projects[${i}].p=parseFloat(this.value)||0;recalc()">
+      <input type="number" min="0" step="0.05" value="${v.c}" title="Delivery cost (PKR M)" style="background:#f6f4ec" oninput="projects[${i}].c=parseFloat(this.value)||0;recalc()">
+      <button title="Remove" onclick="projects.splice(${i},1);renderProjects();recalc()">✕</button>`;
+    box.appendChild(row);
+  });
+}
+function addProject(){projects.push({p:1,c:0.15});renderProjects();recalc();}
+
+let stackChart,pairChart,projChart;
+function num(id){return parseFloat(document.getElementById(id).value)||0}
+
+function recalc(){
+  const collect=num('collectPct')/100;
+  document.getElementById('collectOut').textContent=Math.round(collect*100)+'%';
+
+  const collected=projects.map(o=>o.p*collect);
+  const rev=collected.reduce((a,b)=>a+b,0);
+  const totalCost=projects.reduce((a,o)=>a+o.c,0);
+  const pool=Math.max(0,rev-totalCost);
+
+  document.getElementById('sRev').innerHTML=fmt(rev)+' <small>PKR</small>';
+  document.getElementById('sCost').innerHTML=fmt(totalCost)+' <small>PKR</small>';
+  document.getElementById('sPool').innerHTML=fmt(pool)+' <small>PKR</small>';
+
+  const P={aEq:num('aEq')/100,aC:num('aC')/100,bEq:num('bEq')/100,bC:num('bC')/100,
+           cC:num('cC')/100,dP1:num('dP1')/100,dP2:num('dP2')/100,
+           dTrig:Math.max(0,Math.round(num('dTrig'))),dEq:num('dEq')/100};
+
+  function model(commArr,eqPct){
+    const comm=commArr.reduce((a,b)=>a+b,0);
+    const dist=Math.max(0,pool-comm);
+    const eq=dist*eqPct;
+    return{comm,eq,his:comm+eq,co:dist-eq,perProj:commArr};
+  }
+  const A=model(collected.map(p=>p*P.aC),P.aEq);
+  const B=model(collected.map(p=>p*P.bC),P.bEq);
+  const C=model(collected.map(p=>p*P.cC),0);
+  const D=model(collected.map((p,i)=>p*(i<P.dTrig?P.dP1:P.dP2)),P.dEq);
+  const M=[A,B,C,D];
+  const names=[`A: ${num('aEq')}%eq+${num('aC')}%c`,`B: ${num('bEq')}%eq+${num('bC')}%c`,
+               `C: ${num('cC')}% comm`,`D: hybrid`];
+
+  const bestHis=Math.max(...M.map(m=>m.his)), bestCo=Math.max(...M.map(m=>m.co));
+
+  if(stackChart)stackChart.destroy();
+  stackChart=new Chart(document.getElementById('stackChart'),{
+    type:'bar',
+    data:{labels:names,datasets:[
+      {label:'Company keeps',data:M.map(m=>m.co),backgroundColor:'#1f8a66',maxBarThickness:26},
+      {label:'His commission',data:M.map(m=>m.comm),backgroundColor:'#2e5fa3',maxBarThickness:26},
+      {label:'His equity dividend',data:M.map(m=>m.eq),backgroundColor:'#6b4fa3',maxBarThickness:26}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmtFull(c.parsed.x)}}},
+      scales:{x:{stacked:true,ticks:{callback:v=>v+'M'},grid:{color:'#e4e9e4'}},
+              y:{stacked:true,grid:{display:false},ticks:{font:{size:11}}}}}});
+
+  if(pairChart)pairChart.destroy();
+  pairChart=new Chart(document.getElementById('pairChart'),{
+    type:'bar',
+    data:{labels:names,datasets:[
+      {label:'His total',data:M.map(m=>m.his),backgroundColor:'#2e5fa3',borderRadius:4,maxBarThickness:26},
+      {label:'Company keeps',data:M.map(m=>m.co),backgroundColor:'#1f8a66',borderRadius:4,maxBarThickness:26}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmtFull(c.parsed.y)}}},
+      scales:{x:{ticks:{autoSkip:false,maxRotation:30,font:{size:11}},grid:{display:false}},
+              y:{ticks:{callback:v=>v+'M'},grid:{color:'#e4e9e4'}}}}});
+
+  if(projChart)projChart.destroy();
+  projChart=new Chart(document.getElementById('projChart'),{
+    type:'bar',
+    data:{labels:projects.map((_,i)=>'P'+(i+1)),datasets:[
+      {label:'A',data:A.perProj,backgroundColor:'#c9b48a',maxBarThickness:18},
+      {label:'B',data:B.perProj,backgroundColor:'#8aa7c9',maxBarThickness:18},
+      {label:'C',data:C.perProj,backgroundColor:'#2e5fa3',maxBarThickness:18},
+      {label:'D',data:D.perProj,backgroundColor:'#6b4fa3',maxBarThickness:18}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'top',labels:{boxWidth:12,font:{size:11}}},
+        tooltip:{callbacks:{label:c=>'Model '+c.dataset.label+': '+fmtFull(c.parsed.y)}}},
+      scales:{x:{grid:{display:false}},y:{ticks:{callback:v=>v+'M'},grid:{color:'#e4e9e4'}},},
+      }});
+
+  const rows=[
+    ['His commission',...M.map(m=>fmt(m.comm))],
+    ['His equity dividend',...M.map(m=>fmt(m.eq))],
+    ['His total',...M.map(m=>fmt(m.his)),'hero','his'],
+    ['Company keeps',...M.map(m=>fmt(m.co)),'hero','co'],
+    ['His cut of revenue',...M.map(m=>rev?(m.his/rev*100).toFixed(1)+'%':'—')],
+    ['His cut of profit pool',...M.map(m=>pool?(m.his/pool*100).toFixed(1)+'%':'—')],
+    ['Split (Co : Him)',...M.map(m=>pool?Math.round(m.co/pool*100)+' : '+Math.round(m.his/pool*100):'—')],
+    ['If zero deals close',' equity forever',' equity forever',' 0',' 0'],
+    ['Owns parent company?',num('aEq')+'% permanent',num('bEq')+'% permanent','No','GCC entity only']
+  ];
+  let html='<tr><th>Metric</th>'+names.map(n=>'<th>'+n+'</th>').join('')+'</tr>';
+  rows.forEach(r=>{
+    const hero=r.includes('hero');
+    const kind=r[r.length-1];
+    const cells=r.slice(1,5);
+    let best=-1;
+    if(hero&&kind==='his')best=M.findIndex(m=>m.his===bestHis);
+    if(hero&&kind==='co')best=M.findIndex(m=>m.co===bestCo);
+    html+='<tr'+(hero?' class="hero"':'')+'><td>'+r[0]+'</td>'+
+      cells.map((c,i)=>'<td'+(i===best?' class="win"':'')+'>'+c+(i===best?' ★':'')+'</td>').join('')+'</tr>';
+  });
+  document.getElementById('cmp').innerHTML=html;
+
+  document.getElementById('zeroNote').innerHTML=
+    '<b>The equity trap:</b> under models A and B, if he closes zero deals he still owns '+
+    num('aEq')+'% / '+num('bEq')+'% of your entire company — Pakistan profits, Afzal-type clients, and any future exit included. '+
+    'Under C and D a zero-deal year costs you exactly nothing. Purple in the top chart is money he receives without selling.';
+}
+renderProjects();
+recalc();
+</script>
+</body>
+</html>
